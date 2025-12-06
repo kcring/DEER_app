@@ -224,7 +224,10 @@ This Shiny application was developed as part of the **Science in the Parks Commu
 
 ## Contact
 
-[Add contact information or GitHub issues link]
+**Kacie Ring**  
+University of California, Santa Barbara  
+Website: [kaciering.com](https://kaciering.com)  
+GitHub: [@kcring](https://github.com/kcring)
 
 ---
 

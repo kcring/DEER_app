@@ -687,6 +687,50 @@ ui <- page_fillable(
             
             tags$div(class = "divider"),
             
+            # Acknowledgments
+            tags$section(
+              tags$h2("Acknowledgments"),
+              tags$div(
+                class = "about-card",
+                tags$h3(style = "font-size: 1.2rem; font-weight: 600; margin-top: 0.5rem;", "Model Development"),
+                tags$p(
+                  "The underlying models and code were created by", 
+                  tags$strong("Amanda Van Buskirk"), 
+                  "under the advisement of", 
+                  tags$strong("Dr. Christopher Rota"), 
+                  "in the", 
+                  tags$strong("Rota Quantitative Ecology Lab"), 
+                  "within the", 
+                  tags$strong("Davis College of Agriculture and Natural Resources at West Virginia University"), 
+                  "."
+                )
+              ),
+              tags$div(
+                class = "about-card",
+                tags$h3(style = "font-size: 1.2rem; font-weight: 600; margin-top: 0.5rem;", "Shiny App Development"),
+                tags$p(
+                  "This Shiny application was developed as part of the", 
+                  tags$a(href = "https://esa.org/programs/scip/", target = "_blank", 
+                         style = "color: var(--rw1); text-decoration: underline;",
+                         tags$strong("Science in the Parks Communications Fellowship")), 
+                  ", a collaborative effort between the", 
+                  tags$strong("Ecological Society of America (ESA)"), 
+                  "and the", 
+                  tags$strong("National Park Service (NPS)"), 
+                  "."
+                ),
+                tags$p(
+                  style = "margin-top: 0.75rem;",
+                  tags$strong("Fellowship Support:"), tags$br(),
+                  "•", tags$strong("Dr. Brian Mitchell"), "(NPS) — Fellowship Liaison", tags$br(),
+                  "•", tags$strong("Jasjeet Dhanota"), "(ESA) — Mentor", tags$br(),
+                  "•", tags$strong("Mary Joy Mulumba"), "(ESA) — Mentor"
+                )
+              )
+            ),
+            
+            tags$div(class = "divider"),
+            
             tags$div(
               class = "small",
               style = "margin-top: 22px; color: var(--muted);",

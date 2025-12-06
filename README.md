@@ -206,9 +206,21 @@ If you use this app in your research, please cite the underlying methods:
 
 ## Acknowledgments
 
+### Model Development
+The underlying models and code were created by **Amanda Van Buskirk** under the advisement of **Dr. Christopher Rota** in the **Rota Quantitative Ecology Lab** within the **Davis College of Agriculture and Natural Resources at West Virginia University**.
+
+### Shiny App Development
+This Shiny application was developed as part of the **Science in the Parks Communications Fellowship**, a collaborative effort between the **Ecological Society of America (ESA)** and the **National Park Service (NPS)**. Learn more: [https://esa.org/programs/scip/](https://esa.org/programs/scip/)
+
+**Fellowship Support:**
+- **Dr. Brian Mitchell** (NPS) - Fellowship Liaison
+- **Jasjeet Dhanota** (ESA) - Mentor
+- **Mary Joy Mulumba** (ESA) - Mentor
+
+### Technical Acknowledgments
+- Built with R Shiny, NIMBLE, and the `calecopal` color palette
 - West Virginia University (WVU)
 - National Park Service (NPS)
-- Built with R Shiny, NIMBLE, and the `calecopal` color palette
 
 ## Contact
 

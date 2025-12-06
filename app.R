@@ -699,7 +699,9 @@ ui <- page_fillable(
                   "under the advisement of", 
                   tags$strong("Dr. Christopher Rota"), 
                   "in the", 
-                  tags$strong("Rota Quantitative Ecology Lab"), 
+                  tags$a(href = "https://sites.google.com/mix.wvu.edu/rotalab/home", target = "_blank",
+                         style = "color: var(--rw1); text-decoration: underline;",
+                         tags$strong("Rota Quantitative Ecology Lab")), 
                   "within the", 
                   tags$strong("Davis College of Agriculture and Natural Resources at West Virginia University"), 
                   "."

@@ -695,7 +695,7 @@ ui <- page_fillable(
                 tags$h3(style = "font-size: 1.2rem; font-weight: 600; margin-top: 0.5rem;", "Model Development"),
                 tags$p(
                   "The underlying models and code were created by", 
-                  tags$strong("Amanda Van Buskirk"), 
+                  tags$strong("Dr. Amanda Van Buskirk"), 
                   "under the advisement of", 
                   tags$strong("Dr. Christopher Rota"), 
                   "in the", 

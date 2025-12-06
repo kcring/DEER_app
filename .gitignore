@@ -1,0 +1,50 @@
+# R
+.Rhistory
+.Rapp.history
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Shiny
+rsconnect/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# Data files
+*.csv
+*.xlsx
+data/
+
+# Testing and development files
+test_*.R
+debug_*.R
+*_v1.R
+*_v2.R
+*.Rmd
+.RDataTmp
+
+# Output files
+*.html
+*.pdf
+*.png
+!www/*.png  # Keep logo images in www/
+
+# Environment variables
+.env
+.Renviron
+

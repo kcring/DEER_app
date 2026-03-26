@@ -5,6 +5,35 @@
 # PRE-QC CLEANING HELPERS
 # -------------------------------------------------------------------
 
+parse_timestamp_robust <- function(x, tz = "UTC") {
+  if (inherits(x, "POSIXt")) {
+    return(as.POSIXct(x, tz = tz))
+  }
+  if (inherits(x, "Date")) {
+    return(as.POSIXct(x, tz = tz))
+  }
+  
+  x_chr <- trimws(as.character(x))
+  x_chr[x_chr %in% c("", "NA", "NaN")] <- NA_character_
+  
+  parsed <- suppressWarnings(
+    lubridate::parse_date_time(
+      x_chr,
+      orders = c(
+        "Ymd HMS", "Ymd HM", "Ymd",
+        "mdY HMS", "mdY HM", "mdY",
+        "mdy HMS", "mdy HM", "mdy",
+        "m/d/y HMS", "m/d/y HM", "m/d/y",
+        "m/d/Y HMS", "m/d/Y HM", "m/d/Y"
+      ),
+      tz = tz,
+      quiet = TRUE
+    )
+  )
+  
+  as.POSIXct(parsed, tz = tz)
+}
+
 clean_deployment_import <- function(deployments) {
   # Standardize column names: strip dots & weird whitespace, collapse spaces
   nm <- names(deployments)
@@ -21,6 +50,23 @@ clean_deployment_import <- function(deployments) {
       gsub("^[\\s\\p{Z}]+|[\\s\\p{Z}]+$", "", x, perl = TRUE)
     } else x
   })
+  
+  # Camera Functioning: accept common variants → Yes / No (QC expects these)
+  if ("Camera Functioning" %in% names(deployments)) {
+    x <- deployments$`Camera Functioning`
+    if (is.logical(x)) {
+      deployments$`Camera Functioning` <- ifelse(x, "Yes", "No")
+    } else {
+      xc  <- trimws(as.character(x))
+      low <- tolower(xc)
+      yn <- xc
+      yes_i <- low %in% c("yes", "y", "true", "t", "1") | xc %in% c("TRUE", "1")
+      no_i  <- low %in% c("no", "n", "false", "f", "0") | xc %in% c("FALSE", "0")
+      yn[yes_i] <- "Yes"
+      yn[no_i]  <- "No"
+      deployments$`Camera Functioning` <- yn
+    }
+  }
   
   deployments
 }
@@ -50,6 +96,10 @@ clean_images_import <- function(images) {
   # Strip explicit " UTC" suffix if present in Timestamp
   if ("Timestamp" %in% names(images)) {
     images$Timestamp <- sub(" UTC$", "", images$Timestamp)
+    parsed_ts <- parse_timestamp_robust(images$Timestamp)
+    if (sum(!is.na(parsed_ts)) > 0) {
+      images$Timestamp <- parsed_ts
+    }
   }
   
   # Split multi-species rows like "Deer|Raccoon" into separate rows
@@ -67,7 +117,7 @@ clean_images_import <- function(images) {
 # QC: check_deployments (as before)
 # -------------------------------------------------------------------
 
-check_deployments <- function(deployment) {
+check_deployments <- function(deployment, images = NULL) {
   issues <- list()
   
   # ---- Column presence ----
@@ -175,16 +225,29 @@ check_deployments <- function(deployment) {
       }
     }
     
-    # Camera Malfunction Date only required if Camera Functioning == "No"
+    # Camera Malfunction Date: if images are supplied, only required when that site has images
     cam_func <- deployment$`Camera Functioning`[i]
     if (!is.na(cam_func) && tolower(cam_func) == "no") {
       val <- deployment$`Camera Malfunction Date`[i]
-      if (is.na(val) || val == "") {
-        issues <- c(issues, paste("❌ Camera Malfunction Date missing in row", i, 
-                                  " — required because Camera Functioning = No"))
-      } else if (is.na(as.Date(val, format = "%m/%d/%Y"))) {
-        issues <- c(issues, paste("❌ Bad date in Camera Malfunction Date row", i, ":", val, 
-                                  " — should be mm/dd/yyyy"))
+      cam_id <- deployment$`Site Name`[i]
+      if (is.null(images) || nrow(images) == 0) {
+        if (is.na(val) || val == "") {
+          issues <- c(issues, paste("❌ Camera Malfunction Date missing in row", i,
+                                    " — required because Camera Functioning = No"))
+        } else if (is.na(as.Date(val, format = "%m/%d/%Y"))) {
+          issues <- c(issues, paste("❌ Bad date in Camera Malfunction Date row", i, ":", val,
+                                    " — should be mm/dd/yyyy"))
+        }
+      } else if (cam_id %in% images$`Site Name`) {
+        if (is.na(val) || val == "") {
+          issues <- c(issues, paste("❌ Camera Malfunction Date missing in row", i,
+                                    " — required because Camera Functioning = No"))
+        } else if (is.na(as.Date(val, format = "%m/%d/%Y"))) {
+          issues <- c(issues, paste("❌ Bad date in Camera Malfunction Date row", i, ":", val,
+                                    " — should be mm/dd/yyyy"))
+        }
+      } else {
+        message("No images for site ", cam_id, " — skipping Malfunction Date check")
       }
     }
     
@@ -266,7 +329,7 @@ check_deployments <- function(deployment) {
 # QC: check_images (as before)
 # -------------------------------------------------------------------
 
-check_images <- function(images, deployments, survey_year) {
+check_images <- function(images, deployments) {
   issues <- c()
   fixes  <- c()
   
@@ -296,14 +359,24 @@ check_images <- function(images, deployments, survey_year) {
   }
   
   # ---- Site Name validation ----
-  valid_regex <- "^[A-Z]{4}_(0[1-9]|[1-9][0-9])$|^[A-Z]+_(0[1-9]|[1-9][0-9]|10[0-9]|[1-9][0-9]{2})$"
+  valid_regex <- paste0(
+    "^(",
+    "[A-Z]{4}_(0[1-9]|[1-9][0-9]|[1-9][0-9]{2})",
+    "|",
+    "[A-Z]{2,}_(0[1-9]|[1-9][0-9]|[1-9][0-9]{2})",
+    "|",
+    "[A-Z]{4}_[A-Z]{2,}_(0[1-9]|[1-9][0-9]|[1-9][0-9]{2})",
+    "|",
+    "[A-Z]{4}[A-Z]{2,}_(0[1-9]|[1-9][0-9]|[1-9][0-9]{2})",
+    ")$"
+  )
   invalid_idx <- which(!grepl(valid_regex, images$`Site Name`))
   if (length(invalid_idx) > 0) {
     site_counts <- table(images$`Site Name`[invalid_idx])
     for (sn in names(site_counts)) {
       issues <- c(issues, paste0(
         "❌ Invalid Site_Name: ", sn,
-        " — found ", site_counts[[sn]], " occurrence(s); must follow 'PARK_##/PARK_###' or 'UNIT_##/UNIT_###'."
+        " — found ", site_counts[[sn]], " occurrence(s); must follow an allowed site format such as 'PARK_##', 'UNIT_##', 'PARK_UNIT_##', or 'PARKUNIT_##'."
       ))
     }
   }
@@ -325,9 +398,7 @@ check_images <- function(images, deployments, survey_year) {
   # Auto-fix positive longitudes
   fix_lon <- which(!is.na(lon_num) & lon_num > 0 & lon_num <= 180)
   if (length(fix_lon) > 0) {
-    old_vals <- lon_num[fix_lon]
-    new_vals <- -abs(old_vals)
-    images$Longitude[fix_lon] <- new_vals
+    images$Longitude[fix_lon] <- -abs(lon_num[fix_lon])
     message("🛠 Fixed Longitude for ", length(fix_lon), " image(s) ")
   }
   
@@ -352,69 +423,59 @@ check_images <- function(images, deployments, survey_year) {
     issues <- c(issues, paste0("❌ ", length(bad_site_match), " image(s) have Site Names not found in deployments"))
   }
   
-  # ---- Timestamp parsing and year check ----
-  ts_parsed <- suppressWarnings(as.POSIXct(images$Timestamp,
-                                           format = "%Y-%m-%d %H:%M:%S",
-                                           tz = "UTC"))
-  missing_time <- is.na(ts_parsed) & !is.na(images$Timestamp) & images$Timestamp != ""
-  if (any(missing_time)) {
-    ts_parsed[missing_time] <- suppressWarnings(
-      as.POSIXct(
-        paste0(images$Timestamp[missing_time], " 00:00:00"),
-        format = "%Y-%m-%d %H:%M:%S",
-        tz = "UTC"
-      )
-    )
-  }
-  bad_ts <- which(!is.na(images$Timestamp) & images$Timestamp != "" & is.na(ts_parsed))
+  # ---- Timestamp parsing ----
+  ts_parsed <- parse_timestamp_robust(images$Timestamp)
+  ts_missing_input <- !is.na(images$Timestamp) & trimws(as.character(images$Timestamp)) != ""
+  bad_ts <- which(ts_missing_input & is.na(ts_parsed))
   if (length(bad_ts) > 0) {
     site_counts <- table(images$`Site Name`[bad_ts])
     for (sn in names(site_counts)) {
       issues <- c(issues, paste0("❌ Bad Timestamp format at site ", sn,
-                                 " — ", site_counts[[sn]], " occurrence(s); should be yyyy-mm-dd HH:MM:SS."))
+                                 " — ", site_counts[[sn]], " occurrence(s); use a recognizable date-time like yyyy-mm-dd HH:MM:SS or mm/dd/yyyy HH:MM."))
     }
   }
+  images$Timestamp <- ts_parsed
   
-  # Year check
-  wrong_year_idx <- which(!is.na(ts_parsed) & format(ts_parsed, "%Y") != survey_year)
-  if (length(wrong_year_idx) > 0) {
-    site_years <- split(format(ts_parsed[wrong_year_idx], "%Y"),
-                        images$`Site Name`[wrong_year_idx])
-    for (sn in names(site_years)) {
-      unique_years <- unique(site_years[[sn]])
-      issues <- c(issues, paste0(
-        "❌ Timestamp year mismatch at site ", sn,
-        " — found year(s): ", paste(unique_years, collapse = ", "),
-        "; expected year: ", survey_year, "."
-      ))
-    }
-  }
-  
-  # ---- First image vs. Start Date check ----
-  dt_images <- data.table::data.table(images)
-  dt_images[, ts := ts_parsed]
-  
-  # Get first image per site
-  first_img <- dt_images[!is.na(ts), .(first_img = min(ts)), by = `Site Name`]
-  
-  # Prepare deployment start dates
+  # ---- Timestamp vs deployment window check (±3 days buffer) ----
   dt_deploy <- data.table::data.table(deployments)
   dt_deploy[, dep_start := as.Date(`Start Date`, format = "%m/%d/%Y")]
+  dt_deploy[, dep_end   := as.Date(`End Date`,   format = "%m/%d/%Y")]
   
-  # Merge and compare
-  merged_dates <- merge(first_img,
-                        dt_deploy[, .(`Site Name`, dep_start)],
-                        by = "Site Name",
-                        all.x = TRUE)
-  merged_dates[, first_img_date := as.Date(first_img)]
+  dt_images <- data.table::data.table(images)
+  dt_images[, ts := ts_parsed]
+  dt_images[, img_date := as.Date(ts)]
   
-  mismatched_sites <- merged_dates[first_img_date != dep_start, `Site Name`]
-  if (length(mismatched_sites) > 0) {
-    issues <- c(issues, paste0(
-      "❌ Date mismatch for ", length(mismatched_sites), " site(s): ",
-      paste(mismatched_sites, collapse = ", "),
-      " — first image date does not match deployment Start Date."
-    ))
+  merged_dates <- merge(
+    dt_images,
+    dt_deploy[, .(`Site Name`, dep_start, dep_end)],
+    by = "Site Name",
+    all.x = TRUE
+  )
+  
+  buffer_days <- 3L
+  
+  out_of_window <- merged_dates[
+    !is.na(img_date) &
+      (
+        img_date < (dep_start - buffer_days) |
+          img_date > (dep_end + buffer_days)
+      )
+  ]
+  
+  if (nrow(out_of_window) > 0) {
+    first_img_out <- out_of_window[, .(first_img = min(img_date)), by = `Site Name`]
+    
+    for (i in seq_len(nrow(first_img_out))) {
+      site <- first_img_out$`Site Name`[i]
+      start_date <- dt_deploy$dep_start[dt_deploy$`Site Name` == site]
+      first_img <- first_img_out$first_img[i]
+      
+      issues <- c(issues, paste0(
+        "⚠️ Timestamp outside deployment window at site ", site, ": ",
+        "Start Date = ", start_date, ", First image = ", first_img, ". ",
+        "Check TrapTagger and adjust first photo timestamp if needed."
+      ))
+    }
   }
   
   # ---- Final output ----
@@ -488,9 +549,7 @@ format_deployments <- function(deployments) {
 trim_images_56days <- function(images) {
   # Ensure Timestamp is POSIXct
   if (!inherits(images$Timestamp, "POSIXt")) {
-    images$Timestamp <- suppressWarnings(
-      as.POSIXct(images$Timestamp, tz = "UTC")
-    )
+    images$Timestamp <- parse_timestamp_robust(images$Timestamp)
   }
   
   # Determine first timestamp per site
@@ -613,4 +672,3 @@ deer_daily_detections <- function(images) {
       .groups = "drop"
     )
 }
-

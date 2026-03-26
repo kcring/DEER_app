@@ -1,4 +1,3 @@
-# app.R
 # Deer Density Lab – USCR vs REM vs TTE
 # Models run via run_USCR(), run_REM(), run_TTE() in R/sim_and_models.R
 
@@ -9,13 +8,32 @@
 needs <- c(
   "shiny", "bslib", "DT", "ggplot2", "dplyr", "tidyr",
   "readr", "purrr", "stringr", "secr", "data.table",
-  "leaflet", "ggrepel",
-  "nimble", "nimbleHMC", "parallel", "MCMCvis", "lubridate",
-  "calecopal"
+  "leaflet", "ggrepel", "shinyjs",
+  "nimble", "parallel", "MCMCvis", "lubridate", "sf", "tibble"
 )
 
-missing <- needs[!needs %in% installed.packages()[, "Package"]]
-if (length(missing)) install.packages(missing, dependencies = TRUE)
+# Redwood-inspired palette (hex only — no extra color package)
+redwood_colors <- c(
+  "#303018", "#604830", "#609048", "#90A860", "#786048", "#B8C4A8"
+)
+
+missing <- needs[!needs %in% rownames(installed.packages())]
+if (length(missing)) {
+  message("DEER App: installing missing packages: ", paste(missing, collapse = ", "))
+  utils::install.packages(missing, dependencies = TRUE)
+}
+failed <- character()
+for (pkg in needs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) failed <- c(failed, pkg)
+}
+if (length(failed)) {
+  stop(
+    "DEER App could not load: ", paste(failed, collapse = ", "),
+    "\nInstall manually, e.g. install.packages(c(",
+    paste0("\"", failed, "\"", collapse = ", "), "))",
+    call. = FALSE
+  )
+}
 
 suppressPackageStartupMessages({
   library(shiny)
@@ -34,12 +52,8 @@ suppressPackageStartupMessages({
   library(tibble)
   library(sf)
   library(nimble)
-  library(nimbleHMC)
-  library(calecopal)
+  library(shinyjs)
 })
-
-# Get redwood1 palette colors
-redwood_colors <- cal_palette("redwood1")
 
 # -------------------------------------------------------------------
 # Helper files
@@ -48,91 +62,18 @@ redwood_colors <- cal_palette("redwood1")
 source("R/sim_and_models.R")   # run_USCR(), run_REM(), run_TTE()
 source("R/data_checks.R")      # QC + summary helpers
 
+# Pin the active USCR implementation to the current file contents so stale
+# objects from prior sessions cannot route the app through an older wrapper.
+uscr_model_env <- new.env(parent = globalenv())
+sys.source("R/sim_and_models.R", envir = uscr_model_env)
+run_USCR_app <- uscr_model_env$run_USCR
+
 # -------------------------------------------------------------------
-# Simulation helpers (secr + model input builders)
+# Simulation helpers
 # -------------------------------------------------------------------
-
-simulate_camera_counts <- function(n_side = 5, spacing_m = 300, days = 21,
-                                   D_per_km2 = 25, lambda0 = 0.20,
-                                   sigma_m = 150, seed = 1) {
-  set.seed(seed)
-  
-  traps <- secr::make.grid(
-    nx       = n_side,
-    ny       = n_side,
-    spacing  = spacing_m,
-    detector = "count"
-  )
-  
-  mask <- secr::make.mask(
-    traps   = traps,
-    buffer  = 4 * sigma_m,
-    spacing = spacing_m / 3
-  )
-  
-  # secr uses animals/ha when coords are in metres
-  D_ha <- D_per_km2 / 100
-  
-  ch <- secr::sim.capthist(
-    traps      = traps,
-    popn       = list(D = D_ha),
-    detectfn   = "HHN",
-    detectpar  = list(lambda0 = lambda0, sigma = sigma_m),
-    noccasions = days,
-    renumber   = FALSE
-  )
-  
-  list(
-    ch    = ch,
-    traps = traps,
-    mask  = mask,
-    truth = list(
-      D_per_km2 = D_per_km2,
-      lambda0   = lambda0,
-      sigma_m   = sigma_m,
-      days      = days,
-      spacing_m = spacing_m,
-      n_cams    = nrow(traps)
-    )
-  )
-}
-
-get_counts_matrix <- function(ch) {
-  dims <- dim(ch)
-  if (length(dims) == 3) {
-    apply(ch, c(3, 2), sum, na.rm = TRUE)  # [trap, occasion]
-  } else {
-    as.matrix(ch)
-  }
-}
-
-build_sim_data_for_nimble <- function(ch, detection_radius_m) {
-  tr <- as.data.frame(secr::traps(ch))
-  n_traps <- nrow(tr)
-  
-  counts_mat <- get_counts_matrix(ch)
-  n_occ <- ncol(counts_mat)
-  
-  camera_counts <- rowSums(counts_mat, na.rm = TRUE)
-  camera_days   <- rep(n_occ, n_traps)  # all cameras active all days
-  
-  out <- data.frame(
-    Site                 = paste0("SimCam_", seq_len(n_traps)),
-    `Detection Distance` = rep(detection_radius_m, n_traps),  # one value per camera
-    utm_e                = tr$x / 1000,   # m -> km
-    utm_n                = tr$y / 1000
-  )
-  
-  list(out = out, camera_counts = camera_counts, camera_days = camera_days)
-}
-
-# --- Note: build_nps_model_inputs() is defined in R/sim_and_models.R ---
-# This function matches the Rmd workflow exactly and handles:
-# - Date parsing (including 2-digit years like "2/3/25")
-# - UTM conversion and centering
-# - Daily detection matrices
-# - Start/End Index creation
-# - Camera counts and camera days calculation
+# Simulation and model-input helpers now come directly from R/sim_and_models.R:
+#   simulate_camera_counts(), get_counts_matrix(), capthist_to_events(),
+#   sim_model_inputs(), build_nps_model_inputs()
 
 # -------------------------------------------------------------------
 # Generic helpers for summaries & WAIC-combo (like Rmd)
@@ -211,11 +152,47 @@ build_combo_table_from_fits <- function(fits) {
   list(table = table_out, waic = waic_tbl)
 }
 
+#' Simulated data: only USCR is fit — single-model summary table (no WAIC averaging)
+build_sim_combo_table_uscr_only <- function(uscr_fit) {
+  if (is.null(uscr_fit) || is.null(uscr_fit$samples_all)) return(NULL)
+  D <- uscr_fit$samples_all[, "D_mi2"]
+  waic_val <- get_waic_value(uscr_fit)
+  waic_tbl <- tibble::tibble(
+    model     = "USCR",
+    waic      = waic_val,
+    deltaWAIC = 0,
+    rel_lik   = 1,
+    w         = 1
+  )
+  table_out <- tibble::tibble(
+    Method                    = "USCR",
+    `Mean density (deer/mi²)` = mean(D),
+    `Lower 2.5%`              = stats::quantile(D, 0.025),
+    `Upper 97.5%`             = stats::quantile(D, 0.975),
+    `Prob > 20 DPSM`          = mean(D > 20),
+    `WAIC weight`             = 1
+  )
+  list(table = table_out, waic = waic_tbl)
+}
+
+#' Posterior summary for CSV export (parameter names, mean, 95% CI)
+posterior_summary_df <- function(fit) {
+  if (is.null(fit) || is.null(fit$samples_all)) return(NULL)
+  m <- as.data.frame(fit$samples_all)
+  tibble::tibble(
+    parameter = names(m),
+    mean      = sapply(m, mean),
+    q025      = sapply(m, function(x) stats::quantile(x, 0.025)),
+    q975      = sapply(m, function(x) stats::quantile(x, 0.975))
+  )
+}
+
 # -------------------------------------------------------------------
 # UI
 # -------------------------------------------------------------------
 
 ui <- page_fillable(
+  shinyjs::useShinyjs(),
   theme = bs_theme(
     version = 5, 
     bootswatch = "flatly",
@@ -424,13 +401,25 @@ ui <- page_fillable(
     "))
   ),
   tags$div(
-    style = "text-align: center; padding: 5px 0; display: flex; align-items: center; justify-content: center; gap: 5px;",
-    tags$img(src = "wvu_logo.png", alt = "WVU", style = "height: 50px; width: auto;"),
-    tags$img(src = "deer_app_logo.png", alt = "DEER App", style = "height: 300px; width: auto;"),
-    tags$img(src = "nps_logo.png", alt = "NPS", style = "height: 50px; width: auto;")
+    style = "text-align: center; padding: 5px 0; display: flex; align-items: center; justify-content: center; gap: 5px; flex-wrap: wrap;",
+    tagList(
+      tags$img(src = "wvu_logo.png", alt = "WVU", style = "height: 50px; width: auto;"),
+      tags$img(src = "deer_app_logo.png", alt = "DEER App", style = "height: 300px; width: auto;"),
+      tags$img(src = "nps_logo.png", alt = "NPS", style = "height: 50px; width: auto;"),
+      if (file.exists(file.path("www", "usgs_logo.png"))) {
+        tags$img(src = "usgs_logo.png", alt = "USGS", style = "height: 50px; width: auto;")
+      } else {
+        tags$span(style = "display:none;")
+      }
+    )
+  ),
+  tags$p(
+    style = "text-align: center; font-size: 0.82rem; color: #666; margin: 0 12px 8px;",
+    "To add the USGS mark: place ", tags$code("www/usgs_logo.png"), " (agency approval required)."
   ),
   
   navset_tab(
+    id = "deer_tabs",
         
         # ------------------------- ABOUT ------------------------------
         nav_panel(
@@ -439,7 +428,7 @@ ui <- page_fillable(
             class = "hero",
             tags$div(
               style = "max-width: 980px; margin: 0 auto; padding: 0 16px;",
-              tags$span(class = "badge", style = "background: var(--rw4); border: 1px solid var(--rw3); color: var(--ink);", "National Parks • Winter camera survey"),
+              tags$span(class = "badge", style = "background: var(--rw4); border: 1px solid var(--rw3); color: var(--ink);", "Winter camera surveys • National parks & collaborators"),
               tags$h1(style = "color: var(--ink); margin-top: 0.5rem; text-align: center;",
                 "DEER App"
               ),
@@ -487,6 +476,15 @@ ui <- page_fillable(
                     tags$li("Arrays of ~16–25 cameras, ≤400 m spacing, unbaited placement."),
                     tags$li("Standardized CSVs and workflow make park‑to‑park comparisons possible.")
                   )
+                ),
+                tags$div(
+                  class = "about-card",
+                  tags$h3("Rigorous"),
+                  tags$ul(
+                    tags$li("Report density with uncertainty (credible intervals)."),
+                    tags$li("WAIC‑weighted averaging across REM, TTE, and USCR for uploaded NPS data."),
+                    tags$li("uSCR estimates density from unmarked spatial detections—no individual IDs.")
+                  )
                 )
               )
             ),
@@ -515,7 +513,8 @@ ui <- page_fillable(
                       tags$li("Detection parameters (sigma, lambda0)"),
                       tags$li("Random seed for reproducibility")
                     ),
-                    "Press the", tags$strong("'Simulate grid'"), "button and you will have toy data to run the models on. This is useful for testing the app and understanding how the models work."
+                    "Press the", tags$strong("'Simulate grid'"), "button to generate toy data, then run", tags$strong("USCR on simulated data"), "from the USCR tab.",
+                    "REM and TTE use the uploaded NPS workflow only; the", tags$strong("Compare & combine"), "tab for simulated data summarizes the USCR fit only."
                   )
                 ),
                 tags$div(
@@ -538,11 +537,9 @@ ui <- page_fillable(
                 ),
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 1rem;", "Step 2: Adjust settings (optional)"),
                 tags$p(
-                  "The models have default settings that work well for most cases. However, if you need to change something, you can:",
+                  "The models have default settings that work well for most cases. To change MCMC, priors, or detection geometry, open the",
+                  tags$strong("'Model settings'"), "tab, choose", tags$strong("Advanced"), ", and edit the fields.",
                   tags$ul(
-                    tags$li("Go to the", tags$strong("'Add your data'"), "tab"),
-                    tags$li("Scroll to the", tags$strong("'Settings mode'"), "section"),
-                    tags$li("Click the", tags$strong("'Advanced'"), "button to reveal additional options"),
                     tags$li("Adjust MCMC settings (iterations, burn-in, thinning, number of chains)"),
                     tags$li("Modify priors for movement speed, detection parameters, or camera heterogeneity"),
                     tags$li("Change camera detection angle (default: 55°)")
@@ -550,26 +547,26 @@ ui <- page_fillable(
                 ),
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 1rem;", "Step 3: Run the models"),
                 tags$p(
-                  "Use the", tags$strong("USCR"), ",", tags$strong("REM"), ", and", tags$strong("TTE"), "tabs to run each model:",
+                  tags$strong("Simulated data:"), "run", tags$strong("USCR"), "from the USCR tab.",
+                  tags$strong("NPS uploads:"), "use the", tags$strong("USCR"), ",", tags$strong("REM"), ", and", tags$strong("TTE"), "tabs—each has a run button for NPS data.",
                   tags$ul(
-                    tags$li("Each model tab has", tags$strong("separate buttons"), "for simulated vs NPS data"),
-                    tags$li("Click the", tags$strong("'Run'"), "button for your chosen data type"),
-                    tags$li("Models show", tags$strong("progress bars"), "and", tags$strong("status messages"), "while running"),
+                    tags$li("Click the", tags$strong("'Run'"), "button for your data type"),
+                    tags$li("Models show", tags$strong("progress bars"), "and", tags$strong("status messages"), "where applicable"),
                     tags$li("You can", tags$strong("stop a model run"), "using the red 'Stop' button if needed"),
                     tags$li("Results appear below the buttons once each model completes")
                   ),
                   tags$em("Note:"), "USCR typically takes 30-60 minutes, while REM and TTE are faster (several minutes)."
                 ),
-                tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 1rem;", "Step 4: Compare results"),
+                tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 0.5rem;", "Step 4: Compare results"),
                 tags$p(
                   "Use the", tags$strong("'Compare & combine'"), "tab to:",
                   tags$ul(
-                    tags$li("View per‑model results and density estimates"),
-                    tags$li("See the", tags$strong("WAIC‑weighted average"), ", matching the Rmarkdown workflow"),
-                    tags$li("Compare model performance using WAIC values"),
-                    tags$li("Export the summary table for reporting")
+                    tags$li("For", tags$strong("NPS data"), ": WAIC‑weighted averaging across all three models (and CSV exports of posterior summaries)"),
+                    tags$li("For", tags$strong("simulated data"), ": USCR density summary only"),
+                    tags$li("Compare model performance using WAIC values (NPS)"),
+                    tags$li("Download CSV posterior summaries (parameter names, mean, 95% CI)")
                   ),
-                  "The final output is", tags$strong("deer per square mile (mi²)"), "with credible intervals, providing a robust estimate that balances the strengths of all three models."
+                  "Reported density is", tags$strong("deer per square mile (mi²)"), "with credible intervals; for NPS data the combined estimate balances the three models."
                 )
               )
             ),
@@ -736,7 +733,7 @@ ui <- page_fillable(
             tags$div(
               class = "small",
               style = "margin-top: 22px; color: var(--muted);",
-              tags$p("Palette inspired by", tags$code("calecopal::redwood1"), "with California redwood forest colors.")
+              tags$p("Color palette: redwood‑inspired greens and browns (inline hex in", tags$code("app.R"), ").")
             )
           )
         ),
@@ -745,7 +742,8 @@ ui <- page_fillable(
         nav_panel(
           "Simulate data",
           markdown(paste(
-            "Simulate a camera grid with secr; models are run from the USCR, REM, and TTE tabs.",
+            "Simulate a camera grid with **secr**; run **USCR on simulated data** from the USCR tab.",
+            "REM and TTE are run from their tabs using **uploaded NPS data** only.",
             "",
             "Adjust the simulation parameters below, then click 'Simulate grid' to generate data.",
             sep = "\n"
@@ -771,11 +769,11 @@ ui <- page_fillable(
             ),
             column(4,
               numericInput("seed", "Random seed", value = 1, min = 1),
-              h4("Camera geometry"),
-              sliderInput("r_m", "Detection radius r (m)",
+              h4("Camera geometry (simulation)"),
+              sliderInput("r_m_sim", "Detection radius r (m) for simulated grid",
                           min = 8, max = 25, value = 12, step = 1),
-              sliderInput("theta", "Detection angle θ (degrees)",
-                          min = 20, max = 80, value = 55, step = 1),
+              p(class = "small", style = "color: var(--muted);",
+                "Detection angle θ for REM/TTE/USCR is set under ", tags$strong("Model settings"), "."),
               br(),
               actionButton("run_sim", "Simulate grid", class = "btn-primary")
             )
@@ -808,10 +806,11 @@ ui <- page_fillable(
           h3("The app will:"),
           markdown(paste(
             "1. Pre-clean column names and whitespace;",
-            "2. Run `check_deployments()` and `check_images()`;",
-            "3. Trim images to the first 56 days per camera using `trim_images_56days()`.",
+            "2. Run `check_deployments()` and `check_images()` (deployments are re-checked when images upload so malfunction-date rules can use site overlap);",
+            "3. Flag image timestamps outside each camera's deployment window (±3 days);",
+            "4. Trim images to the first 56 days per camera using `trim_images_56days()`.",
             "",
-            "Download cleaned/trimmed CSVs if needed, then run models in the USCR/REM/TTE tabs.",
+            "Download cleaned/trimmed CSVs if needed, then configure MCMC and priors in the **Model settings** tab and run models in the USCR/REM/TTE tabs.",
             "",
             "---",
             "",
@@ -855,8 +854,6 @@ ui <- page_fillable(
           
           h3("Step 2: Images file"),
           fileInput("images_csv", "Upload images CSV (NPS format)", accept = ".csv"),
-          numericInput("survey_year", "Survey year (yyyy)",
-                       value = 2025, min = 2000, max = 2100),
           h4("Images check log"),
           verbatimTextOutput("images_check_log"),
           h4("Preview of cleaned + trimmed images data"),
@@ -865,23 +862,37 @@ ui <- page_fillable(
           
           hr(),
           
-          h3("Step 3: Model settings and parameters"),
+          h3("Model settings"),
+          p(
+            "Configure MCMC iterations, priors, and detection geometry (",
+            tags$strong("r"), ", ", tags$strong("θ"), ") in the ",
+            tags$strong("Model settings"), " tab."
+          )
+        ),
+        
+        nav_panel(
+          "Model settings",
           markdown(paste(
-            "### MCMC Settings",
+            "### MCMC settings",
             "",
-            "**Recommended starting values** (from NPS guidance):",
+            "**Recommended starting values in the app**:",
             "",
-            "- **REM/TTE**: Start with 6000 iterations, 1000 burn-in, thin = 5",
-            "- **USCR**: Start with 11000 iterations, 1000 burn-in, thin = 10",
-            "- **Number of chains**: 3 (for convergence diagnostics)",
-            "- **Convergence criteria**: R̂ < 1.1 for all monitored parameters",
+            "- **REM/TTE**: 6000 iterations, 1000 burn-in, thin = 5",
+            "- **USCR**: 6000 iterations, 1000 burn-in, thin = 5, M = 300",
+            "- **Number of chains**: 1 by default for speed; use more chains when you want stronger convergence diagnostics",
+            "- **Convergence criteria**: R̂ < 1.1 for all monitored parameters when multiple chains are used",
             "",
-            "If convergence is poor (R̂ > 1.1), increase iterations by iter × 2 or increase thinning.",
+            "USCR now does a short adaptive tuning phase before the final run. If convergence is poor or psi pushes high, increase iterations and/or M and rerun.",
             "",
-            "### Camera Geometry",
+            "### Meta-analysis and pooled priors (not implemented in-app)",
             "",
-            "Current camera detection angle is 55 degrees based on Browning camera model.",
-            "Adjust if using different camera model or taking measurements in the field.",
+            "Each analysis uses **independent** informative priors tuned from literature and NPS guidance.",
+            "**Hyperpriors** that borrow strength across parks or studies are a natural extension but are **not** built into this app.",
+            "For external meta-analysis, combine posterior samples or summaries that include uncertainty—not point estimates alone.",
+            "",
+            "### Camera geometry (NPS and models)",
+            "",
+            "Default detection half-angle is 55° (Browning-style). Adjust under **Advanced** if you use a different camera or field measurements.",
             "",
             sep = "\n"
           )),
@@ -910,8 +921,9 @@ ui <- page_fillable(
           conditionalPanel(
             "input.mode == 'Default'",
             markdown(paste(
-              "**Using recommended defaults** for MCMC and priors (from NPS guidance).",
+              "**Using speed-aware app defaults** for MCMC and priors.",
               "",
+              "These settings are lighter than a full offline analysis and are meant to keep the app usable.",
               "Switch to 'Advanced' to edit priors, data augmentation M, and MCMC settings.",
               sep = "\n"
             ))
@@ -924,7 +936,7 @@ ui <- page_fillable(
               fluidRow(
                 column(4,
                   numericInput("n_chains", "Number of chains",
-                               value = 3, min = 1, max = 8, step = 1)
+                               value = 1, min = 1, max = 8, step = 1)
                 ),
                 column(4,
                   numericInput("iter_rem_tte", "REM/TTE iterations",
@@ -936,21 +948,22 @@ ui <- page_fillable(
                 ),
                 column(4,
                   numericInput("iter_uscr", "USCR iterations",
-                               value = 11000, min = 1000, step = 1000),
+                               value = 6000, min = 1000, step = 1000),
                   numericInput("burnin_uscr", "USCR burn-in",
                                value = 1000, min = 0, step = 500),
                   numericInput("thin_uscr", "USCR thinning",
-                               value = 10, min = 1, step = 1),
+                               value = 5, min = 1, step = 1),
                   numericInput("M_uscr", "USCR M (data augmentation)",
-                               value = 1000, min = 200, step = 100)
+                               value = 300, min = 100, step = 100)
                 )
               ),
               
               markdown(paste(
-                "**Note on M (data augmentation)**: Start at M = 1000. If posterior N approaches M,",
-                "or if psi concentrates near 1, increase M to 2000-4000.",
+                "**Note on M (data augmentation)**: The app starts lower for speed. If posterior N approaches M,",
+                "or if psi concentrates near 1, increase M and rerun.",
                 "",
                 "**Note on USCR iterations**: If convergence warnings appear, increase iterations by iter × 2.",
+                "The app now does a short adaptive tuning phase before the final run.",
                 sep = "\n"
               )),
               
@@ -1031,14 +1044,14 @@ ui <- page_fillable(
             "input.mode == 'Default'",
             tags$div(
               style = "display:none;",
-              numericInput("n_chains", NULL, value = 3),
+              numericInput("n_chains", NULL, value = 1),
               numericInput("iter_rem_tte", NULL, value = 6000),
               numericInput("burnin_rem_tte", NULL, value = 1000),
               numericInput("thin_rem_tte", NULL, value = 5),
-              numericInput("iter_uscr", NULL, value = 11000),
+              numericInput("iter_uscr", NULL, value = 6000),
               numericInput("burnin_uscr", NULL, value = 1000),
-              numericInput("thin_uscr", NULL, value = 10),
-              numericInput("M_uscr", NULL, value = 1000),
+              numericInput("thin_uscr", NULL, value = 5),
+              numericInput("M_uscr", NULL, value = 300),
               numericInput("D_max", NULL, value = 200),
               numericInput("log_v_mean", NULL, value = 1.339),
               numericInput("log_v_sd", NULL, value = 0.2955),
@@ -1049,6 +1062,20 @@ ui <- page_fillable(
               numericInput("sd_eps_shape", NULL, value = 1)
             )
           )
+        ),
+        
+        nav_panel(
+          "Shapefile (planned)",
+          markdown(paste(
+            "The app currently expects **deployment and images CSVs** in NPS SOP format.",
+            "",
+            "**Future work:** optional upload of a **park boundary or habitat shapefile** (e.g. GeoPackage, zipped shapefile)",
+            "to clip cameras, define the state-space polygon for uSCR, or validate that coordinates fall inside the study area.",
+            "That pipeline is **not implemented** yet—use GIS software to QC coordinates before upload.",
+            "",
+            "If you add support later, prefer reading with `sf::st_read()` and the same CRS as deployment lat/long.",
+            sep = "\n"
+          ))
         ),
         
         # ---------------------- DATA SUMMARY --------------------------
@@ -1083,7 +1110,7 @@ ui <- page_fillable(
                 <p>$$Y_{jt} \\sim \\mathrm{Poisson}(\\lambda_{jt})$$</p>
                 <p>Encounter rate with distance decay and camera heterogeneity:</p>
                 <p>$$\\lambda_{jt} = \\mathrm{effort}_{jt}\\;\\lambda_0 \\sum_{i=1}^{M} z_i \\exp\\!\\Big(-\\frac{d_{ij}^2}{2\\sigma^2}\\Big)\\; \\exp(\\epsilon_j)$$</p>
-                <p>Density is obtained by integrating over activity centers and dividing the inferred abundance by the state‑space area; the app reports \\(D_{\\mathrm{mi}^2}\\).</p>
+                <p>Density is \\(N\\) divided by the study area in mi²: with real coordinates, area comes from the union of buffers around cameras (as in the analysis Rmd); simulated UTM‑only grids use the rectangular state space. Activity centers are constrained so each lies within the buffer distance of at least one camera. The app reports \\(D_{\\mathrm{mi}^2}\\).</p>
                 <h3>Variables</h3>
                 <ul>
                   <li>\\(Y_{jt}\\) — count of independent deer events at camera \\(j\\) on day \\(t\\) (from <code>Cluster ID</code>).</li>
@@ -1145,6 +1172,8 @@ ui <- page_fillable(
           ),
           br(),
           verbatimTextOutput("uscr_sim_text"),
+          h5("Run status & troubleshooting"),
+          verbatimTextOutput("uscr_sim_debug"),
           
           hr(),
           h4("NPS data"),
@@ -1155,6 +1184,8 @@ ui <- page_fillable(
           ),
           br(),
           verbatimTextOutput("uscr_nps_text"),
+          h5("Run status & troubleshooting"),
+          verbatimTextOutput("uscr_nps_debug"),
           tags$div(
             style = "text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e0e0e0;",
             tags$h3(style = "margin: 0; color: var(--rw3);", "DEER App"),
@@ -1227,13 +1258,11 @@ ui <- page_fillable(
           ),
           hr(),
           h4("Simulated data"),
-          div(
-            actionButton("run_rem_sim", "Run REM on simulated data", class = "btn-primary"),
-            actionButton("stop_rem_sim", "Stop", class = "btn-danger", style = "margin-left: 10px;"),
-            style = "margin-bottom: 10px;"
+          p(
+            style = "max-width: 52rem;",
+            "REM is not run on the secr simulator output in this app. Use",
+            tags$strong("uploaded NPS data"), "in the REM tab, or review REM on the toy grid conceptually via the equations above."
           ),
-          br(),
-          verbatimTextOutput("rem_sim_text"),
           
           hr(),
           h4("NPS data"),
@@ -1244,6 +1273,8 @@ ui <- page_fillable(
           ),
           br(),
           verbatimTextOutput("rem_nps_text"),
+          h5("Run status & troubleshooting"),
+          verbatimTextOutput("rem_nps_debug"),
           tags$div(
             style = "text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e0e0e0;",
             tags$h3(style = "margin: 0; color: var(--rw3);", "DEER App"),
@@ -1321,13 +1352,11 @@ ui <- page_fillable(
           ),
           hr(),
           h4("Simulated data"),
-          div(
-            actionButton("run_tte_sim", "Run TTE on simulated data", class = "btn-primary"),
-            actionButton("stop_tte_sim", "Stop", class = "btn-danger", style = "margin-left: 10px;"),
-            style = "margin-bottom: 10px;"
+          p(
+            style = "max-width: 52rem;",
+            "TTE is not run on the secr simulator output in this app. Use",
+            tags$strong("uploaded NPS data"), "in the TTE tab."
           ),
-          br(),
-          verbatimTextOutput("tte_sim_text"),
           
           hr(),
           h4("NPS data"),
@@ -1338,6 +1367,8 @@ ui <- page_fillable(
           ),
           br(),
           verbatimTextOutput("tte_nps_text"),
+          h5("Run status & troubleshooting"),
+          verbatimTextOutput("tte_nps_debug"),
           tags$div(
             style = "text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e0e0e0;",
             tags$h3(style = "margin: 0; color: var(--rw3);", "DEER App"),
@@ -1349,24 +1380,29 @@ ui <- page_fillable(
         nav_panel(
           "Compare & combine",
           markdown(paste(
-            "Uses **WAIC-based model averaging** from the three models.",
+            "**NPS data:** WAIC-based model averaging across REM, TTE, and USCR.",
             "",
-            "For each dataset (simulated or NPS):",
-            "",
-            "1. Compute ΔWAIC and WAIC weights for REM, TTE, USCR;",
+            "1. Compute ΔWAIC and WAIC weights;",
             "2. Combine posterior draws of `D_mi²` (deer per square mile);",
             "3. Report unweighted and WAIC-weighted mean densities, 95% CIs, and P(D > 20 DPSM).",
             "",
-            "Run USCR, REM, and TTE from their tabs first, then check tables below.",
+            "**Simulated data:** only **USCR** is fit on the toy grid; the table below is the USCR density summary (not a three‑model average).",
+            "",
+            "Run the models from their tabs first, then check the tables.",
             sep = "\n"
           )),
           
-          h4("Simulated data – WAIC-weighted results (deer/mi²)"),
+          h4("Simulated data – USCR density summary (deer/mi²)"),
           DTOutput("sim_combo_table"),
+          p(class = "small", style = "color: var(--muted);",
+            "REM/TTE are not run on simulated inputs in this app."),
+          downloadButton("dl_sim_uscr_csv", "Download simulated USCR posterior summary (CSV)"),
           
           hr(),
           h4("NPS data – WAIC-weighted results (deer/mi²)"),
-          DTOutput("nps_combo_table")
+          DTOutput("nps_combo_table"),
+          p("Posterior summaries (all monitored parameters, mean, 95% CI) for each model:"),
+          downloadButton("dl_nps_all_csv", "Download NPS posterior summaries — REM, TTE, USCR (CSV)")
         )
   )
 )
@@ -1376,6 +1412,10 @@ ui <- page_fillable(
 # -------------------------------------------------------------------
 
 server <- function(input, output, session) {
+  
+  observeEvent(input$deer_tabs, {
+    shinyjs::runjs("window.scrollTo(0, 0);")
+  }, ignoreInit = TRUE)
   
   # ================================================================
   # SIMULATION: grid + inputs for models
@@ -1395,9 +1435,9 @@ server <- function(input, output, session) {
   
   sim_data <- reactive({
     req(sim())
-    build_sim_data_for_nimble(
-      ch                 = sim()$ch,
-      detection_radius_m = input$r_m
+    sim_model_inputs(
+      sim = sim(),
+      detection_radius_m = input$r_m_sim
     )
   })
   
@@ -1411,9 +1451,10 @@ server <- function(input, output, session) {
       geom_point(data = mask_df, aes(x = x, y = y), alpha = 0.1, color = redwood_colors[5]) +
       geom_point(data = traps_df, aes(x = x, y = y), size = 3, color = redwood_colors[3]) +
       geom_text(data = traps_df, aes(x = x, y = y, label = camera),
-                nudge_y = 15, size = 3, color = redwood_colors[1]) +
+                nudge_y = 15, size = 4.2, color = redwood_colors[1]) +
       coord_equal() +
       theme_minimal() +
+      theme(axis.text = element_text(size = 11)) +
       labs(
         x = "m", y = "m",
         title = sprintf(
@@ -1437,6 +1478,7 @@ server <- function(input, output, session) {
         total_deer = d$camera_counts
       )
     
+    td_max <- max(deer_dist$total_deer, na.rm = TRUE)
     ggplot(deer_dist, aes(x = x, y = y)) +
       geom_point(aes(size = total_deer),
                  color = redwood_colors[3], alpha = 0.7) +
@@ -1445,7 +1487,12 @@ server <- function(input, output, session) {
         size = 3,
         max.overlaps = Inf
       ) +
-      scale_size_continuous(name = "Total deer") +
+      scale_size_continuous(
+        name   = "Total deer",
+        range  = c(2, 14),
+        limits = c(0, NA),
+        breaks = pretty(c(0, max(1, td_max)))
+      ) +
       coord_equal() +
       labs(
         title = "Total Deer Detections by Camera",
@@ -1577,13 +1624,55 @@ server <- function(input, output, session) {
     
     images_raw <- readr::read_csv(
       input$images_csv$datapath,
-      show_col_types = FALSE
+      show_col_types = FALSE,
+      col_types = readr::cols(
+        `Sighting Count` = readr::col_character(),
+        Species = readr::col_character()
+      )
     )
     
     images_raw <- clean_images_import(images_raw)
     
-    msgs  <- character()
-    warns <- character()
+    # Re-run deployment QC with images (malfunction date rules use site overlap)
+    dep_msgs  <- character()
+    dep_warns <- character()
+    dep_res <- tryCatch(
+      {
+        withCallingHandlers(
+          {
+            check_deployments(deployment_checked(), images_raw)
+          },
+          message = function(m) {
+            dep_msgs <<- c(dep_msgs, m$message)
+            invokeRestart("muffleMessage")
+          },
+          warning = function(w) {
+            dep_warns <<- c(dep_warns, w$message)
+            invokeRestart("muffleWarning")
+          }
+        )
+      },
+      error = function(e) {
+        showNotification(
+          paste("Deployment re-check failed:", e$message),
+          type = "error"
+        )
+        images_checked(NULL)
+        images_issues(list(
+          messages = dep_msgs,
+          warnings = c(dep_warns, paste0("ERROR: ", e$message))
+        ))
+        return(NULL)
+      }
+    )
+    
+    if (is.null(dep_res)) return(NULL)
+    
+    deployment_checked(dep_res)
+    deployment_issues(list(messages = dep_msgs, warnings = dep_warns))
+    
+    msgs  <- dep_msgs
+    warns <- dep_warns
     
     checked <- NULL
     
@@ -1593,8 +1682,7 @@ server <- function(input, output, session) {
           {
             checked <- check_images(
               images      = images_raw,
-              deployments = deployment_checked(),
-              survey_year = input$survey_year
+              deployments = dep_res
             )
           },
           message = function(m) {
@@ -1768,6 +1856,7 @@ server <- function(input, output, session) {
       need(nrow(dc) > 0, "No 'Deer' images found in dataset.")
     )
     
+    td_max <- max(dc$total_deer, na.rm = TRUE)
     ggplot(dc, aes(x = Longitude, y = Latitude)) +
       geom_point(aes(size = total_deer),
                  color = redwood_colors[3], alpha = 0.7) +
@@ -1776,7 +1865,12 @@ server <- function(input, output, session) {
         size = 3,
         max.overlaps = Inf
       ) +
-      scale_size_continuous(name = "Total deer") +
+      scale_size_continuous(
+        name   = "Total deer",
+        range  = c(2, 14),
+        limits = c(0, NA),
+        breaks = pretty(c(0, max(1, td_max)))
+      ) +
       coord_fixed() +
       labs(
         title = "Total Deer Detections by Camera",
@@ -1816,27 +1910,271 @@ server <- function(input, output, session) {
   # ================================================================
   
   uscr_sim_fit <- reactiveVal(NULL)
-  rem_sim_fit  <- reactiveVal(NULL)
-  tte_sim_fit  <- reactiveVal(NULL)
   
   uscr_nps_fit <- reactiveVal(NULL)
   rem_nps_fit  <- reactiveVal(NULL)
   tte_nps_fit  <- reactiveVal(NULL)
+  
+  make_model_debug <- function(model, data_source, supported_sources, preprocess_note) {
+    list(
+      model = model,
+      data_source = data_source,
+      supported_sources = supported_sources,
+      preprocess_note = preprocess_note,
+      status = "idle",
+      stage = "Not started",
+      started_at = NULL,
+      finished_at = NULL,
+      guidance = "No run has been started yet.",
+      raw_error = NULL,
+      context = character(),
+      history = character()
+    )
+  }
+  
+  update_model_debug <- function(rv,
+                                 status = NULL,
+                                 stage = NULL,
+                                 started_at = NULL,
+                                 finished_at = NULL,
+                                 guidance = NULL,
+                                 raw_error = NULL,
+                                 context = NULL,
+                                 log_entry = NULL) {
+    state <- rv()
+    if (is.null(state)) state <- list()
+    
+    if (!is.null(status)) state$status <- status
+    if (!is.null(stage)) state$stage <- stage
+    if (!is.null(started_at)) state$started_at <- started_at
+    if (!is.null(finished_at)) state$finished_at <- finished_at
+    if (!is.null(guidance)) state$guidance <- guidance
+    if (!is.null(raw_error)) state$raw_error <- raw_error
+    if (!is.null(context)) state$context <- context
+    if (!is.null(log_entry)) {
+      state$history <- c(
+        state$history,
+        paste0("[", format(Sys.time(), "%H:%M:%S"), "] ", log_entry)
+      )
+    }
+    
+    rv(state)
+    invisible(state)
+  }
+  
+  format_num <- function(x, digits = 2) {
+    if (length(x) != 1 || is.na(x) || !is.finite(x)) return("NA")
+    format(round(x, digits), nsmall = digits, trim = TRUE)
+  }
+  
+  summarize_uscr_context <- function(d, source_label = "NPS", sim_truth = NULL) {
+    det_dist <- if ("Detection Distance" %in% names(d$out)) {
+      paste0(
+        format_num(min(d$out$`Detection Distance`, na.rm = TRUE), 1),
+        " to ",
+        format_num(max(d$out$`Detection Distance`, na.rm = TRUE), 1),
+        " m"
+      )
+    } else {
+      "Not available"
+    }
+    
+    lines <- c(
+      paste("Cameras:", nrow(d$out)),
+      paste("Total deer events:", sum(d$camera_counts, na.rm = TRUE)),
+      paste("Total camera-days:", format_num(sum(d$camera_days, na.rm = TRUE), 1)),
+      paste("Detection distance range:", det_dist),
+      if (source_label == "NPS") {
+        "Supported sources here: uploaded NPS data and simulated grid data."
+      } else {
+        "Supported sources here: simulated grid data and uploaded NPS data."
+      },
+      "Preprocessing: total deer events per camera, camera-days, and buffered spatial state space."
+    )
+    
+    if (!is.null(sim_truth)) {
+      lines <- c(lines, paste("True simulated density:", format_num(sim_truth$D_per_km2, 1), "deer/km^2"))
+    }
+    
+    lines
+  }
+  
+  summarize_rem_context <- function(d) {
+    c(
+      paste("Cameras:", nrow(d$out)),
+      paste("Total deer events:", sum(d$camera_counts, na.rm = TRUE)),
+      paste("Total camera-days:", format_num(sum(d$camera_days, na.rm = TRUE), 1)),
+      paste(
+        "Detection distance range:",
+        paste0(
+          format_num(min(d$out$`Detection Distance`, na.rm = TRUE), 1),
+          " to ",
+          format_num(max(d$out$`Detection Distance`, na.rm = TRUE), 1),
+          " m"
+        )
+      ),
+      "Supported sources here: uploaded NPS data only.",
+      "Preprocessing: REM uses total deer events per camera and camera-days."
+    )
+  }
+  
+  summarize_tte_context <- function(d) {
+    c(
+      paste("Cameras:", nrow(d$out)),
+      paste("Total deer events passed to TTE:", sum(d$camera_counts, na.rm = TRUE)),
+      paste("Total camera-days:", format_num(sum(d$camera_days, na.rm = TRUE), 1)),
+      paste(
+        "Detection distance range:",
+        paste0(
+          format_num(min(d$out$`Detection Distance`, na.rm = TRUE), 1),
+          " to ",
+          format_num(max(d$out$`Detection Distance`, na.rm = TRUE), 1),
+          " m"
+        )
+      ),
+      "Supported sources here: uploaded NPS data only.",
+      "Current app preprocessing: TTE is receiving total deer events per camera and camera-days."
+    )
+  }
+  
+  friendly_model_error <- function(model, data_source, error_text) {
+    tips <- c(
+      paste0(model, " on ", data_source, " did not finish."),
+      "Read the raw error below, then try the model-specific guidance."
+    )
+    
+    if (grepl("unused arguments", error_text, ignore.case = TRUE)) {
+      tips <- c(tips, "This usually means an older function definition is still loaded. Restart R and launch this app from the current project folder.")
+    }
+    if (grepl("zero camera-days", error_text, ignore.case = TRUE)) {
+      tips <- c(tips, "One or more cameras ended up with zero effort days. Check Start Date/End Date, malfunction handling, and 56-day trimming.")
+    }
+    if (grepl("camera_counts and camera_days must have length nrow\\(out\\)", error_text)) {
+      tips <- c(tips, "The camera table, counts, and camera-days vectors got out of sync. Re-upload the data and check the NPS model-input step.")
+    }
+    if (grepl("cannot allocate|vector memory|std::bad_alloc", error_text, ignore.case = TRUE)) {
+      tips <- c(tips, "This looks like a memory issue. Try fewer chains, fewer iterations, or a smaller USCR M for a test run.")
+    }
+    if (grepl("Package '.*' is required|there is no package called", error_text, ignore.case = TRUE)) {
+      tips <- c(tips, "A required R package is missing in this session. Install the package named in the raw error, restart R, and rerun.")
+    }
+    if (grepl("NA|NaN|Inf", error_text)) {
+      tips <- c(tips, "Missing or invalid numeric values reached the model. Check detection distances, camera-days, timestamps, and coordinates in the upload summary tabs.")
+    }
+    
+    if (identical(model, "USCR")) {
+      tips <- c(tips, "USCR does an adaptive tuning run before the final run. If it is too slow for testing, reduce chains, iterations, or M.")
+    }
+    if (identical(model, "REM")) {
+      tips <- c(tips, "REM expects uploaded NPS data with per-camera deer events, camera-days, and detection distances.")
+    }
+    if (identical(model, "TTE")) {
+      tips <- c(tips, "TTE is available only for uploaded NPS data in this app. The current build passes total deer events per camera to TTE.")
+    }
+    
+    paste(tips, collapse = "\n")
+  }
+  
+  format_model_debug <- function(state, fit = NULL) {
+    lines <- c(
+      paste("Model:", state$model),
+      paste("Data source:", state$data_source),
+      paste("Supported in app:", state$supported_sources),
+      paste("Status:", state$status),
+      paste("Stage:", state$stage)
+    )
+    
+    if (!is.null(state$started_at)) {
+      lines <- c(lines, paste("Started:", format(state$started_at, "%Y-%m-%d %H:%M:%S")))
+    }
+    if (!is.null(state$finished_at)) {
+      lines <- c(lines, paste("Finished:", format(state$finished_at, "%Y-%m-%d %H:%M:%S")))
+    }
+    if (!is.null(state$started_at)) {
+      end_time <- if (identical(state$status, "running")) Sys.time() else state$finished_at %||% Sys.time()
+      elapsed_min <- as.numeric(difftime(end_time, state$started_at, units = "mins"))
+      lines <- c(lines, paste("Elapsed:", format_num(elapsed_min, 1), "minutes"))
+    }
+    
+    lines <- c(lines, "", "Guidance:", state$guidance)
+    
+    if (length(state$context)) {
+      lines <- c(lines, "", "Input summary:", paste0("- ", state$context))
+    }
+    
+    if (!is.null(fit) && !is.null(fit$settings)) {
+      lines <- c(
+        lines,
+        "",
+        "Run settings used:",
+        paste0("- Final M: ", fit$settings$M),
+        paste0("- Final iterations: ", fit$settings$iter),
+        paste0("- Burn-in: ", fit$settings$burnin),
+        paste0("- Thin: ", fit$settings$thin),
+        paste0("- Chains: ", fit$settings$n_chains)
+      )
+      if (!is.null(fit$final_rhat_max) && is.finite(fit$final_rhat_max)) {
+        lines <- c(lines, paste0("- Final max Rhat: ", format_num(fit$final_rhat_max, 3)))
+      }
+    }
+    
+    if (!is.null(fit) && !is.null(fit$tuning_history) && nrow(fit$tuning_history) > 0) {
+      tuning_lines <- apply(
+        fit$tuning_history,
+        1,
+        function(row) {
+          paste0(
+            "round ", row[["round"]],
+            ": M=", row[["M"]],
+            ", iter=", row[["niter"]],
+            ", thin=", row[["thin"]],
+            ", chains=", row[["n_chains"]],
+            ", rhat=", format_num(as.numeric(row[["rhat_max"]]), 3),
+            ", M_too_small=", row[["M_too_small"]]
+          )
+        }
+      )
+      lines <- c(lines, "", "USCR tuning history:", paste0("- ", tuning_lines))
+    }
+    
+    if (!is.null(state$raw_error)) {
+      lines <- c(lines, "", "Raw error:", state$raw_error)
+    }
+    
+    if (length(state$history)) {
+      lines <- c(lines, "", "Recent log:", paste0("- ", tail(state$history, 8)))
+    }
+    
+    paste(lines, collapse = "\n")
+  }
+  
+  `%||%` <- function(x, y) {
+    if (is.null(x)) y else x
+  }
+  
+  uscr_sim_debug <- reactiveVal(
+    make_model_debug("USCR", "Simulated grid", "Simulated grid; uploaded NPS data", "Total deer events per camera, camera-days, and buffered state space.")
+  )
+  uscr_nps_debug <- reactiveVal(
+    make_model_debug("USCR", "Uploaded NPS data", "Uploaded NPS data; simulated grid", "Total deer events per camera, camera-days, and buffered state space.")
+  )
+  rem_nps_debug <- reactiveVal(
+    make_model_debug("REM", "Uploaded NPS data", "Uploaded NPS data only", "REM uses total deer events per camera and camera-days.")
+  )
+  tte_nps_debug <- reactiveVal(
+    make_model_debug("TTE", "Uploaded NPS data", "Uploaded NPS data only", "Current build passes total deer events per camera and camera-days.")
+  )
   
   # Status tracking for model runs
   uscr_sim_running <- reactiveVal(FALSE)
   uscr_nps_running <- reactiveVal(FALSE)
   rem_nps_running <- reactiveVal(FALSE)
   tte_nps_running <- reactiveVal(FALSE)
-  rem_sim_running <- reactiveVal(FALSE)
-  tte_sim_running <- reactiveVal(FALSE)
   
   # Stop flags for interrupting model runs
   stop_uscr_sim <- reactiveVal(FALSE)
   stop_uscr_nps <- reactiveVal(FALSE)
-  stop_rem_sim <- reactiveVal(FALSE)
   stop_rem_nps <- reactiveVal(FALSE)
-  stop_tte_sim <- reactiveVal(FALSE)
   stop_tte_nps <- reactiveVal(FALSE)
   
   nps_model_inputs <- reactive({
@@ -1863,24 +2201,10 @@ server <- function(input, output, session) {
                      type = "warning", duration = 3)
   })
   
-  observeEvent(input$stop_rem_sim, {
-    stop_rem_sim(TRUE)
-    stop_flags_env$stop_rem_sim <- TRUE
-    showNotification("Stopping REM (sim) run...", 
-                     type = "warning", duration = 3)
-  })
-  
   observeEvent(input$stop_rem_nps, {
     stop_rem_nps(TRUE)
     stop_flags_env$stop_rem_nps <- TRUE
     showNotification("Stopping REM (NPS) run...", 
-                     type = "warning", duration = 3)
-  })
-  
-  observeEvent(input$stop_tte_sim, {
-    stop_tte_sim(TRUE)
-    stop_flags_env$stop_tte_sim <- TRUE
-    showNotification("Stopping TTE (sim) run...", 
                      type = "warning", duration = 3)
   })
   
@@ -1899,11 +2223,53 @@ server <- function(input, output, session) {
     }
   }
   
+  uscr_run_args <- function(waic = TRUE, status_callback = NULL) {
+    args <- list(
+      iter = input$iter_uscr,
+      burnin = input$burnin_uscr,
+      thin = input$thin_uscr,
+      n_chains = input$n_chains,
+      M = input$M_uscr,
+      log_sigma_mean = input$log_sigma_mean,
+      log_sigma_sd = input$log_sigma_sd,
+      log_lam0_sd = input$log_lam0_sd,
+      sd_eps_shape = input$sd_eps_shape,
+      adaptive = TRUE,
+      compute_WAIC = waic,
+      diagnostic_mode = FALSE,
+      tuning_n_chains = if (isTRUE(input$n_chains > 1)) min(2L, as.integer(input$n_chains)) else 1L,
+      parallel_chains = isTRUE(input$n_chains > 1),
+      status_callback = status_callback,
+      verbose = FALSE
+    )
+    
+    # Keep the app compatible with whichever run_USCR() definition is
+    # currently loaded, including older variants without these extras.
+    valid_names <- names(formals(run_USCR_app))
+    args[names(args) %in% valid_names]
+  }
+
   # --- USCR: simulated ---
   
   observeEvent(input$run_uscr_sim, {
     req(sim_data())
     d <- sim_data()
+    uscr_sim_debug(make_model_debug(
+      "USCR",
+      "Simulated grid",
+      "Simulated grid; uploaded NPS data",
+      "Total deer events per camera, camera-days, and buffered state space."
+    ))
+    update_model_debug(
+      uscr_sim_debug,
+      status = "running",
+      stage = "Preflight checks",
+      started_at = Sys.time(),
+      guidance = "USCR supports simulated and uploaded NPS data. Watch this panel for tuning rounds and the final run stage.",
+      raw_error = NULL,
+      context = summarize_uscr_context(d, source_label = "Simulated", sim_truth = sim()$truth),
+      log_entry = "Simulated USCR run requested."
+    )
     
     # Reset stop flag
     stop_uscr_sim(FALSE)
@@ -1911,8 +2277,7 @@ server <- function(input, output, session) {
     uscr_sim_running(TRUE)
     uscr_sim_fit(NULL)  # Clear previous results
     
-    showNotification("Running USCR on simulated data... This may take 30-60 minutes.", 
-                     type = "message", duration = 10)
+    showNotification("Running USCR on simulated data.", type = "message", duration = 6)
     
     fit <- tryCatch(
       {
@@ -1921,27 +2286,50 @@ server <- function(input, output, session) {
         
         withProgress(
           message = "Running USCR model",
-          detail = "Compiling model and running MCMC chains...",
+          detail = "Checking inputs and preparing the USCR run...",
           value = 0,
           {
-            setProgress(0.1, detail = "Compiling NIMBLE model...")
+            setProgress(0.05, detail = "Checking inputs and preparing the USCR run...")
+            update_model_debug(
+              uscr_sim_debug,
+              stage = "Preparing run",
+              log_entry = "Input checks passed. Starting USCR setup."
+            )
             
             # Check stop flag again before running
             check_stop_flag("stop_uscr_sim")
             
-            fit_result <- run_USCR(
-              out            = d$out,
-              camera_counts  = d$camera_counts,
-              camera_days    = d$camera_days,
-              iter           = input$iter_uscr,
-              burnin         = input$burnin_uscr,
-              thin           = input$thin_uscr,
-              n_chains       = input$n_chains,
-              M              = input$M_uscr,
-              log_sigma_mean = input$log_sigma_mean,
-              log_sigma_sd   = input$log_sigma_sd,
-              log_lam0_sd    = input$log_lam0_sd,
-              sd_eps_shape   = input$sd_eps_shape
+            status_callback <- function(stage, detail = NULL, value = NULL) {
+              stage_label <- switch(
+                stage,
+                setup = "Preparing state space and model code",
+                tuning = "Adaptive tuning",
+                final_run = "Final MCMC run",
+                stage
+              )
+              update_model_debug(
+                uscr_sim_debug,
+                status = "running",
+                stage = stage_label,
+                log_entry = detail %||% paste("USCR stage:", stage_label)
+              )
+              if (!is.null(value)) {
+                setProgress(value = value, detail = detail)
+              } else if (!is.null(detail)) {
+                setProgress(detail = detail)
+              }
+            }
+            
+            fit_result <- do.call(
+              run_USCR_app,
+              c(
+                list(
+                  out = d$out,
+                  camera_counts = d$camera_counts,
+                  camera_days = d$camera_days
+                ),
+                uscr_run_args(waic = FALSE, status_callback = status_callback)
+              )
             )
             setProgress(1.0, detail = "Complete!")
             fit_result
@@ -1950,8 +2338,26 @@ server <- function(input, output, session) {
       },
       error = function(e) {
         if (stop_uscr_sim() || grepl("stopped by user", e$message, ignore.case = TRUE)) {
+          update_model_debug(
+            uscr_sim_debug,
+            status = "stopped",
+            stage = "Stopped by user",
+            finished_at = Sys.time(),
+            guidance = "The simulated USCR run was stopped manually before completion.",
+            raw_error = e$message,
+            log_entry = "Simulated USCR run stopped by user."
+          )
           showNotification("USCR (sim) run stopped by user.", type = "warning")
         } else {
+          update_model_debug(
+            uscr_sim_debug,
+            status = "error",
+            stage = "Failed",
+            finished_at = Sys.time(),
+            guidance = friendly_model_error("USCR", "simulated data", e$message),
+            raw_error = e$message,
+            log_entry = paste("Simulated USCR failed:", e$message)
+          )
           showNotification(
             paste("USCR (sim) failed:", e$message),
             type = "error", duration = NULL
@@ -1968,6 +2374,14 @@ server <- function(input, output, session) {
     )
     uscr_sim_fit(fit)
     if (!is.null(fit) && !stop_uscr_sim()) {
+      update_model_debug(
+        uscr_sim_debug,
+        status = "success",
+        stage = "Complete",
+        finished_at = Sys.time(),
+        guidance = "Simulated USCR completed successfully. Review the summary above and the tuning history below.",
+        log_entry = "Simulated USCR run completed."
+      )
       showNotification("USCR (sim) complete!", type = "message")
     }
   })
@@ -1977,6 +2391,22 @@ server <- function(input, output, session) {
   observeEvent(input$run_uscr_nps, {
     req(nps_model_inputs())
     d <- nps_model_inputs()
+    uscr_nps_debug(make_model_debug(
+      "USCR",
+      "Uploaded NPS data",
+      "Uploaded NPS data; simulated grid",
+      "Total deer events per camera, camera-days, and buffered state space."
+    ))
+    update_model_debug(
+      uscr_nps_debug,
+      status = "running",
+      stage = "Preflight checks",
+      started_at = Sys.time(),
+      guidance = "USCR supports uploaded NPS data. This panel will show whether the run is still in setup, adaptive tuning, or the final run.",
+      raw_error = NULL,
+      context = summarize_uscr_context(d, source_label = "NPS"),
+      log_entry = "NPS USCR run requested."
+    )
     validate(
       need(all(d$camera_days > 0),
            "Some cameras have zero camera-days; check deployment dates.")
@@ -1987,8 +2417,7 @@ server <- function(input, output, session) {
     uscr_nps_running(TRUE)
     uscr_nps_fit(NULL)  # Clear previous results
     
-    showNotification("Running USCR on NPS data... This may take 30-60 minutes.", 
-                     type = "message", duration = 10)
+    showNotification("Running USCR on NPS data.", type = "message", duration = 6)
     
     fit <- tryCatch(
       {
@@ -2000,10 +2429,15 @@ server <- function(input, output, session) {
         
         withProgress(
           message = "Running USCR model",
-          detail = "Compiling model and running MCMC chains...",
+          detail = "Checking inputs and preparing the USCR run...",
           value = 0,
           {
-            setProgress(0.1, detail = "Compiling NIMBLE model...")
+            setProgress(0.05, detail = "Checking inputs and preparing the USCR run...")
+            update_model_debug(
+              uscr_nps_debug,
+              stage = "Preparing run",
+              log_entry = "Input checks passed. Starting USCR setup."
+            )
             
             # Check stop flag again before running
             if (stop_uscr_nps()) {
@@ -2011,19 +2445,37 @@ server <- function(input, output, session) {
               return(NULL)
             }
             
-            fit_result <- run_USCR(
-              out            = d$out,
-              camera_counts  = d$camera_counts,
-              camera_days    = d$camera_days,
-              iter           = input$iter_uscr,
-              burnin         = input$burnin_uscr,
-              thin           = input$thin_uscr,
-              n_chains       = input$n_chains,
-              M              = input$M_uscr,
-              log_sigma_mean = input$log_sigma_mean,
-              log_sigma_sd   = input$log_sigma_sd,
-              log_lam0_sd    = input$log_lam0_sd,
-              sd_eps_shape   = input$sd_eps_shape
+            status_callback <- function(stage, detail = NULL, value = NULL) {
+              stage_label <- switch(
+                stage,
+                setup = "Preparing state space and model code",
+                tuning = "Adaptive tuning",
+                final_run = "Final MCMC run",
+                stage
+              )
+              update_model_debug(
+                uscr_nps_debug,
+                status = "running",
+                stage = stage_label,
+                log_entry = detail %||% paste("USCR stage:", stage_label)
+              )
+              if (!is.null(value)) {
+                setProgress(value = value, detail = detail)
+              } else if (!is.null(detail)) {
+                setProgress(detail = detail)
+              }
+            }
+            
+            fit_result <- do.call(
+              run_USCR_app,
+              c(
+                list(
+                  out = d$out,
+                  camera_counts = d$camera_counts,
+                  camera_days = d$camera_days
+                ),
+                uscr_run_args(waic = TRUE, status_callback = status_callback)
+              )
             )
             setProgress(1.0, detail = "Complete!")
             fit_result
@@ -2032,8 +2484,26 @@ server <- function(input, output, session) {
       },
       error = function(e) {
         if (stop_uscr_nps()) {
+          update_model_debug(
+            uscr_nps_debug,
+            status = "stopped",
+            stage = "Stopped by user",
+            finished_at = Sys.time(),
+            guidance = "The NPS USCR run was stopped manually before completion.",
+            raw_error = e$message,
+            log_entry = "NPS USCR run stopped by user."
+          )
           showNotification("USCR (NPS) run stopped by user.", type = "warning")
         } else {
+          update_model_debug(
+            uscr_nps_debug,
+            status = "error",
+            stage = "Failed",
+            finished_at = Sys.time(),
+            guidance = friendly_model_error("USCR", "uploaded NPS data", e$message),
+            raw_error = e$message,
+            log_entry = paste("NPS USCR failed:", e$message)
+          )
           showNotification(
             paste("USCR (NPS) failed:", e$message),
             type = "error", duration = NULL
@@ -2048,63 +2518,15 @@ server <- function(input, output, session) {
     )
     uscr_nps_fit(fit)
     if (!is.null(fit) && !stop_uscr_nps()) {
+      update_model_debug(
+        uscr_nps_debug,
+        status = "success",
+        stage = "Complete",
+        finished_at = Sys.time(),
+        guidance = "NPS USCR completed successfully. Review the summary above and the tuning history below.",
+        log_entry = "NPS USCR run completed."
+      )
       showNotification("USCR (NPS) complete!", type = "message")
-    }
-  })
-  
-  # --- REM: simulated ---
-  
-  observeEvent(input$run_rem_sim, {
-    req(sim_data())
-    d <- sim_data()
-    
-    # Reset stop flag
-    stop_rem_sim(FALSE)
-    rem_sim_running(TRUE)
-    
-    showNotification("Running REM on simulated data...", type = "message")
-    fit <- tryCatch(
-      {
-        # Check if stopped before starting
-        if (stop_rem_sim()) {
-          showNotification("REM (sim) run cancelled.", type = "warning")
-          return(NULL)
-        }
-        
-        run_REM(
-          y            = d$camera_counts,
-          r_km         = d$out$`Detection Distance` / 1000,
-          camera_days  = d$camera_days,
-          theta_deg    = input$theta,
-          iter         = input$iter_rem_tte,
-          burnin       = input$burnin_rem_tte,
-          thin         = input$thin_rem_tte,
-          n_chains     = input$n_chains,
-          D_max        = input$D_max,
-          log_v_mean   = input$log_v_mean,
-          log_v_sd     = input$log_v_sd,
-          sd_eps_max   = input$sd_eps_max
-        )
-      },
-      error = function(e) {
-        if (stop_rem_sim()) {
-          showNotification("REM (sim) run stopped by user.", type = "warning")
-        } else {
-          showNotification(
-            paste("REM (sim) failed:", e$message),
-            type = "error", duration = NULL
-          )
-        }
-        return(NULL)
-      },
-      finally = {
-        rem_sim_running(FALSE)
-        stop_rem_sim(FALSE)  # Reset stop flag
-      }
-    )
-    rem_sim_fit(fit)
-    if (!is.null(fit) && !stop_rem_sim()) {
-      showNotification("REM (sim) complete.", type = "message")
     }
   })
   
@@ -2113,6 +2535,22 @@ server <- function(input, output, session) {
   observeEvent(input$run_rem_nps, {
     req(nps_model_inputs())
     d <- nps_model_inputs()
+    rem_nps_debug(make_model_debug(
+      "REM",
+      "Uploaded NPS data",
+      "Uploaded NPS data only",
+      "REM uses total deer events per camera and camera-days."
+    ))
+    update_model_debug(
+      rem_nps_debug,
+      status = "running",
+      stage = "Preflight checks",
+      started_at = Sys.time(),
+      guidance = "REM only runs on uploaded NPS data in this app.",
+      raw_error = NULL,
+      context = summarize_rem_context(d),
+      log_entry = "NPS REM run requested."
+    )
     validate(
       need(all(d$camera_days > 0),
            "Some cameras have zero camera-days; check deployment dates.")
@@ -2136,10 +2574,15 @@ server <- function(input, output, session) {
         
         withProgress(
           message = "Running REM model",
-          detail = "Compiling model and running MCMC chains...",
+          detail = "Preparing REM inputs from uploaded NPS data...",
           value = 0,
           {
-            setProgress(0.1, detail = "Compiling NIMBLE model...")
+            setProgress(0.15, detail = "Preparing REM inputs: deer events per camera and camera-days...")
+            update_model_debug(
+              rem_nps_debug,
+              stage = "Sampling",
+              log_entry = "Running REM chains in NIMBLE."
+            )
             
             # Check stop flag again before running
             if (stop_rem_nps()) {
@@ -2168,8 +2611,26 @@ server <- function(input, output, session) {
       },
       error = function(e) {
         if (stop_rem_nps()) {
+          update_model_debug(
+            rem_nps_debug,
+            status = "stopped",
+            stage = "Stopped by user",
+            finished_at = Sys.time(),
+            guidance = "The REM run was stopped manually before completion.",
+            raw_error = e$message,
+            log_entry = "NPS REM run stopped by user."
+          )
           showNotification("REM (NPS) run stopped by user.", type = "warning")
         } else {
+          update_model_debug(
+            rem_nps_debug,
+            status = "error",
+            stage = "Failed",
+            finished_at = Sys.time(),
+            guidance = friendly_model_error("REM", "uploaded NPS data", e$message),
+            raw_error = e$message,
+            log_entry = paste("NPS REM failed:", e$message)
+          )
           showNotification(
             paste("REM (NPS) failed:", e$message),
             type = "error", duration = NULL
@@ -2184,63 +2645,15 @@ server <- function(input, output, session) {
     )
     rem_nps_fit(fit)
     if (!is.null(fit) && !stop_rem_nps()) {
+      update_model_debug(
+        rem_nps_debug,
+        status = "success",
+        stage = "Complete",
+        finished_at = Sys.time(),
+        guidance = "REM completed successfully. Review the summary above.",
+        log_entry = "NPS REM run completed."
+      )
       showNotification("REM (NPS) complete!", type = "message")
-    }
-  })
-  
-  # --- TTE: simulated ---
-  
-  observeEvent(input$run_tte_sim, {
-    req(sim_data())
-    d <- sim_data()
-    
-    # Reset stop flag
-    stop_tte_sim(FALSE)
-    tte_sim_running(TRUE)
-    
-    showNotification("Running TTE on simulated data...", type = "message")
-    fit <- tryCatch(
-      {
-        # Check if stopped before starting
-        if (stop_tte_sim()) {
-          showNotification("TTE (sim) run cancelled.", type = "warning")
-          return(NULL)
-        }
-        
-        run_TTE(
-          y            = d$camera_counts,
-          r_km         = d$out$`Detection Distance` / 1000,
-          camera_days  = d$camera_days,
-          theta_deg    = input$theta,
-          iter         = input$iter_rem_tte,
-          burnin       = input$burnin_rem_tte,
-          thin         = input$thin_rem_tte,
-          n_chains     = input$n_chains,
-          D_max        = input$D_max,
-          log_v_mean   = input$log_v_mean,
-          log_v_sd     = input$log_v_sd,
-          sd_eps_max   = input$sd_eps_max
-        )
-      },
-      error = function(e) {
-        if (stop_tte_sim()) {
-          showNotification("TTE (sim) run stopped by user.", type = "warning")
-        } else {
-          showNotification(
-            paste("TTE (sim) failed:", e$message),
-            type = "error", duration = NULL
-          )
-        }
-        return(NULL)
-      },
-      finally = {
-        tte_sim_running(FALSE)
-        stop_tte_sim(FALSE)  # Reset stop flag
-      }
-    )
-    tte_sim_fit(fit)
-    if (!is.null(fit) && !stop_tte_sim()) {
-      showNotification("TTE (sim) complete.", type = "message")
     }
   })
   
@@ -2249,6 +2662,22 @@ server <- function(input, output, session) {
   observeEvent(input$run_tte_nps, {
     req(nps_model_inputs())
     d <- nps_model_inputs()
+    tte_nps_debug(make_model_debug(
+      "TTE",
+      "Uploaded NPS data",
+      "Uploaded NPS data only",
+      "Current build passes total deer events per camera and camera-days."
+    ))
+    update_model_debug(
+      tte_nps_debug,
+      status = "running",
+      stage = "Preflight checks",
+      started_at = Sys.time(),
+      guidance = "TTE only runs on uploaded NPS data in this app.",
+      raw_error = NULL,
+      context = summarize_tte_context(d),
+      log_entry = "NPS TTE run requested."
+    )
     validate(
       need(all(d$camera_days > 0),
            "Some cameras have zero camera-days; check deployment dates.")
@@ -2272,10 +2701,15 @@ server <- function(input, output, session) {
         
         withProgress(
           message = "Running TTE model",
-          detail = "Compiling model and running MCMC chains...",
+          detail = "Preparing TTE inputs from uploaded NPS data...",
           value = 0,
           {
-            setProgress(0.1, detail = "Compiling NIMBLE model...")
+            setProgress(0.15, detail = "Preparing TTE inputs and running NIMBLE chains...")
+            update_model_debug(
+              tte_nps_debug,
+              stage = "Sampling",
+              log_entry = "Running TTE chains in NIMBLE."
+            )
             
             # Check stop flag again before running
             if (stop_tte_nps()) {
@@ -2304,8 +2738,26 @@ server <- function(input, output, session) {
       },
       error = function(e) {
         if (stop_tte_nps()) {
+          update_model_debug(
+            tte_nps_debug,
+            status = "stopped",
+            stage = "Stopped by user",
+            finished_at = Sys.time(),
+            guidance = "The TTE run was stopped manually before completion.",
+            raw_error = e$message,
+            log_entry = "NPS TTE run stopped by user."
+          )
           showNotification("TTE (NPS) run stopped by user.", type = "warning")
         } else {
+          update_model_debug(
+            tte_nps_debug,
+            status = "error",
+            stage = "Failed",
+            finished_at = Sys.time(),
+            guidance = friendly_model_error("TTE", "uploaded NPS data", e$message),
+            raw_error = e$message,
+            log_entry = paste("NPS TTE failed:", e$message)
+          )
           showNotification(
             paste("TTE (NPS) failed:", e$message),
             type = "error", duration = NULL
@@ -2320,6 +2772,14 @@ server <- function(input, output, session) {
     )
     tte_nps_fit(fit)
     if (!is.null(fit) && !stop_tte_nps()) {
+      update_model_debug(
+        tte_nps_debug,
+        status = "success",
+        stage = "Complete",
+        finished_at = Sys.time(),
+        guidance = "TTE completed successfully. Review the summary above.",
+        log_entry = "NPS TTE run completed."
+      )
       showNotification("TTE (NPS) complete!", type = "message")
     }
   })
@@ -2330,10 +2790,20 @@ server <- function(input, output, session) {
   
   # USCR summaries
   output$uscr_sim_text <- renderPrint({
+    dbg <- uscr_sim_debug()
     if (uscr_sim_running()) {
       cat("⏳ USCR model is running...\n")
-      cat("This may take 30-60 minutes depending on your settings.\n")
-      cat("Please wait for the progress bar to complete.\n")
+      cat("Current stage:", dbg$stage, "\n")
+      cat("Open 'Run status & troubleshooting' below for more detail.\n")
+      return(invisible(NULL))
+    }
+    if (identical(dbg$status, "error")) {
+      cat("USCR (simulated): the last run failed.\n")
+      cat("See 'Run status & troubleshooting' below for the raw error and guidance.\n")
+      return(invisible(NULL))
+    }
+    if (identical(dbg$status, "stopped")) {
+      cat("USCR (simulated): the last run was stopped before completion.\n")
       return(invisible(NULL))
     }
     fit <- uscr_sim_fit()
@@ -2355,10 +2825,20 @@ server <- function(input, output, session) {
   })
   
   output$uscr_nps_text <- renderPrint({
+    dbg <- uscr_nps_debug()
     if (uscr_nps_running()) {
       cat("⏳ USCR model is running...\n")
-      cat("This may take 30-60 minutes depending on your settings.\n")
-      cat("Please wait for the progress bar to complete.\n")
+      cat("Current stage:", dbg$stage, "\n")
+      cat("Open 'Run status & troubleshooting' below for more detail.\n")
+      return(invisible(NULL))
+    }
+    if (identical(dbg$status, "error")) {
+      cat("USCR (NPS): the last run failed.\n")
+      cat("See 'Run status & troubleshooting' below for the raw error and guidance.\n")
+      return(invisible(NULL))
+    }
+    if (identical(dbg$status, "stopped")) {
+      cat("USCR (NPS): the last run was stopped before completion.\n")
       return(invisible(NULL))
     }
     fit <- uscr_nps_fit()
@@ -2378,28 +2858,21 @@ server <- function(input, output, session) {
   })
   
   # REM summaries
-  output$rem_sim_text <- renderPrint({
-    fit <- rem_sim_fit()
-    if (is.null(fit)) {
-      cat("REM (simulated): not run yet. Click 'Run REM on simulated data'.")
-      return(invisible(NULL))
-    }
-    s <- summarize_method(fit)
-    list(
-      dataset                   = "Simulated",
-      mean_density_deer_per_km2 = round(s$mean_km2, 2),
-      CI95_km2                  = c(round(s$q2.5_km2, 2), round(s$q97.5_km2, 2)),
-      mean_density_deer_per_mi2 = round(s$mean_mi2, 2),
-      CI95_mi2                  = c(round(s$q2.5_mi2, 2), round(s$q97.5_mi2, 2)),
-      WAIC                      = round(s$waic, 2)
-    )
-  })
-  
   output$rem_nps_text <- renderPrint({
+    dbg <- rem_nps_debug()
     if (rem_nps_running()) {
       cat("⏳ REM model is running...\n")
-      cat("This may take 5-15 minutes depending on your settings.\n")
-      cat("Please wait for the progress bar to complete.\n")
+      cat("Current stage:", dbg$stage, "\n")
+      cat("Open 'Run status & troubleshooting' below for more detail.\n")
+      return(invisible(NULL))
+    }
+    if (identical(dbg$status, "error")) {
+      cat("REM (NPS): the last run failed.\n")
+      cat("See 'Run status & troubleshooting' below for the raw error and guidance.\n")
+      return(invisible(NULL))
+    }
+    if (identical(dbg$status, "stopped")) {
+      cat("REM (NPS): the last run was stopped before completion.\n")
       return(invisible(NULL))
     }
     fit <- rem_nps_fit()
@@ -2419,28 +2892,21 @@ server <- function(input, output, session) {
   })
   
   # TTE summaries
-  output$tte_sim_text <- renderPrint({
-    fit <- tte_sim_fit()
-    if (is.null(fit)) {
-      cat("TTE (simulated): not run yet. Click 'Run TTE on simulated data'.")
-      return(invisible(NULL))
-    }
-    s <- summarize_method(fit)
-    list(
-      dataset                   = "Simulated",
-      mean_density_deer_per_km2 = round(s$mean_km2, 2),
-      CI95_km2                  = c(round(s$q2.5_km2, 2), round(s$q97.5_km2, 2)),
-      mean_density_deer_per_mi2 = round(s$mean_mi2, 2),
-      CI95_mi2                  = c(round(s$q2.5_mi2, 2), round(s$q97.5_mi2, 2)),
-      WAIC                      = round(s$waic, 2)
-    )
-  })
-  
   output$tte_nps_text <- renderPrint({
+    dbg <- tte_nps_debug()
     if (tte_nps_running()) {
       cat("⏳ TTE model is running...\n")
-      cat("This may take 5-15 minutes depending on your settings.\n")
-      cat("Please wait for the progress bar to complete.\n")
+      cat("Current stage:", dbg$stage, "\n")
+      cat("Open 'Run status & troubleshooting' below for more detail.\n")
+      return(invisible(NULL))
+    }
+    if (identical(dbg$status, "error")) {
+      cat("TTE (NPS): the last run failed.\n")
+      cat("See 'Run status & troubleshooting' below for the raw error and guidance.\n")
+      return(invisible(NULL))
+    }
+    if (identical(dbg$status, "stopped")) {
+      cat("TTE (NPS): the last run was stopped before completion.\n")
       return(invisible(NULL))
     }
     fit <- tte_nps_fit()
@@ -2459,19 +2925,37 @@ server <- function(input, output, session) {
     )
   })
   
+  output$uscr_sim_debug <- renderText({
+    state <- uscr_sim_debug()
+    if (identical(state$status, "running")) invalidateLater(1000, session)
+    format_model_debug(state, uscr_sim_fit())
+  })
+  
+  output$uscr_nps_debug <- renderText({
+    state <- uscr_nps_debug()
+    if (identical(state$status, "running")) invalidateLater(1000, session)
+    format_model_debug(state, uscr_nps_fit())
+  })
+  
+  output$rem_nps_debug <- renderText({
+    state <- rem_nps_debug()
+    if (identical(state$status, "running")) invalidateLater(1000, session)
+    format_model_debug(state, rem_nps_fit())
+  })
+  
+  output$tte_nps_debug <- renderText({
+    state <- tte_nps_debug()
+    if (identical(state$status, "running")) invalidateLater(1000, session)
+    format_model_debug(state, tte_nps_fit())
+  })
+  
   # ================================================================
   # COMPARE & COMBINE (WAIC-based)
   # ================================================================
   
   sim_combo <- reactive({
-    req(rem_sim_fit(), tte_sim_fit(), uscr_sim_fit())
-    build_combo_table_from_fits(
-      list(
-        REM  = rem_sim_fit(),
-        TTE  = tte_sim_fit(),
-        USCR = uscr_sim_fit()
-      )
-    )
+    req(uscr_sim_fit())
+    build_sim_combo_table_uscr_only(uscr_sim_fit())
   })
   
   nps_combo <- reactive({
@@ -2488,11 +2972,50 @@ server <- function(input, output, session) {
   })
   
   output$sim_combo_table <- renderDT({
+    fit <- uscr_sim_fit()
+    if (is.null(fit)) {
+      return(DT::datatable(
+        data.frame(Note = "Run USCR on simulated data from the USCR tab first."),
+        options = list(dom = "t", paging = FALSE),
+        rownames = FALSE
+      ))
+    }
     combo <- sim_combo()
     df <- combo$table %>%
       mutate(across(where(is.numeric), ~ round(.x, 3)))
     datatable(df, options = list(pageLength = 5, dom = "t"))
   })
+  
+  output$dl_sim_uscr_csv <- downloadHandler(
+    filename = function() {
+      paste0("DEER_sim_USCR_posterior_summary_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      fit <- uscr_sim_fit()
+      req(fit)
+      df <- posterior_summary_df(fit)
+      req(df)
+      readr::write_csv(dplyr::mutate(df, model = "USCR", .before = 1), file)
+    }
+  )
+  
+  output$dl_nps_all_csv <- downloadHandler(
+    filename = function() {
+      paste0("DEER_NPS_posterior_summary_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      r <- rem_nps_fit()
+      t <- tte_nps_fit()
+      u <- uscr_nps_fit()
+      req(r, t, u)
+      df <- dplyr::bind_rows(
+        dplyr::mutate(posterior_summary_df(r), model = "REM", .before = 1),
+        dplyr::mutate(posterior_summary_df(t), model = "TTE", .before = 1),
+        dplyr::mutate(posterior_summary_df(u), model = "USCR", .before = 1)
+      )
+      readr::write_csv(df, file)
+    }
+  )
   
   output$nps_combo_table <- renderDT({
     combo <- nps_combo()

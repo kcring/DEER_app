@@ -1,6 +1,6 @@
 ## R/sim_and_models.R
 ## Simulation helpers + NPS model inputs + REM / USCR / TTE models
-## Models follow Camera_Unmarked_Analyses_updated.Rmd, with a speed-aware adaptive USCR fit for app use.
+## Models follow Camera_Unmarked_Analyses_updated.Rmd (REM/TTE/USCR: nimbleMCMC).
 
 # -------------------------------------------------------------------
 # Package checks (loaded lazily where needed)
@@ -153,14 +153,6 @@ sim_model_inputs <- function(sim,
   )
 }
 
-# Back-compatible alias used by older app code
-build_sim_data_for_nimble <- function(ch, detection_radius_m) {
-  sim_model_inputs(
-    sim = list(ch = ch),
-    detection_radius_m = detection_radius_m
-  )
-}
-
 # -------------------------------------------------------------------
 # 2. NPS inputs: format deployments + images as in the Rmd
 # -------------------------------------------------------------------
@@ -178,12 +170,6 @@ build_nps_model_inputs <- function(deployments, images) {
   }
   
   deps <- format_deployments(deployments)
-  images <- standardize_deer_species(images)
-  
-  if (!inherits(images$Timestamp, "POSIXt")) {
-    images <- images |>
-      dplyr::mutate(Timestamp = parse_timestamp_robust(Timestamp))
-  }
   
   deps <- deps |>
     dplyr::rename(Site = `Site Name`)
@@ -208,7 +194,7 @@ build_nps_model_inputs <- function(deployments, images) {
   
   # Deer-only sequences
   seqs <- images |>
-    dplyr::filter(grepl("deer", Species, ignore.case = TRUE)) |>
+    dplyr::filter(Species == "Deer") |>
     dplyr::group_by(`Cluster ID`) |>
     dplyr::summarise(
       Site           = dplyr::first(`Site Name`),
@@ -990,12 +976,9 @@ safe_rhat_max <- function(samples_list) {
   }
 
   quiet_require("MCMCvis")
-  diag <- tryCatch(
-    MCMCvis::MCMCsummary(samples_list),
-    error = function(e) NULL
-  )
+  diag <- MCMCvis::MCMCsummary(samples_list)
 
-  if (is.null(diag) || !"Rhat" %in% names(diag)) {
+  if (!"Rhat" %in% names(diag)) {
     return(NA_real_)
   }
 
@@ -1029,7 +1012,8 @@ extract_waic_mean <- function(fits) {
 
 # -------------------------------------------------------------------
 # Main USCR wrapper
-# Direct app implementation of the collaborator Rmd while-loop logic.
+# Preserves the older sim_and_models.R calling style while using the
+# integrated adaptive USCR engine above.
 # -------------------------------------------------------------------
 
 run_USCR <- function(out,
@@ -1052,25 +1036,15 @@ run_USCR <- function(out,
                      rhat_target = 1.1,
                      psi_threshold = 0.9,
                      psi_prob_cutoff = 0.01,
-                     max_adapt_rounds = NULL,
+                     max_adapt_rounds = 2,
                      tuning_n_chains = NULL,
                      iter_tune = NULL,
                      thin_tune = 1,
                      parallel_chains = TRUE,
-                     status_callback = NULL,
                      seed = NULL,
                      verbose = FALSE) {
 
   quiet_require("nimble")
-  
-  report_status <- function(stage, detail = NULL, value = NULL) {
-    if (is.function(status_callback)) {
-      try(
-        status_callback(stage = stage, detail = detail, value = value),
-        silent = TRUE
-      )
-    }
-  }
 
   J <- nrow(out)
   if (length(camera_counts) != J || length(camera_days) != J) {
@@ -1113,30 +1087,15 @@ run_USCR <- function(out,
   }
 
   code <- build_uscr_code(J)
-  report_status("setup", "Prepared USCR state space and model code.", value = 0.15)
 
   current_M <- M
   current_iter <- iter_tune
   current_thin <- thin_tune
   adapt_log <- list()
   last_tune_fit <- NULL
-  current_rhat <- Inf
-  M_too_small <- isTRUE(adaptive)
-  round_i <- 0L
 
   if (isTRUE(adaptive)) {
-    repeat {
-      round_i <- round_i + 1L
-
-      if (!is.null(max_adapt_rounds) && round_i > as.integer(max_adapt_rounds)) {
-        warning(
-          "USCR adaptive tuning reached max_adapt_rounds = ",
-          max_adapt_rounds,
-          " before both tuning checks cleared. Proceeding with the latest settings."
-        )
-        break
-      }
-
+    for (round_i in seq_len(max_adapt_rounds)) {
       const <- make_uscr_constants(
         out = out,
         camera_days = camera_days,
@@ -1163,17 +1122,6 @@ run_USCR <- function(out,
           ", chains=", tuning_n_chains
         )
       }
-      report_status(
-        "tuning",
-        paste0(
-          "USCR tuning round ", round_i,
-          ": M=", const$M,
-          ", iter=", current_iter,
-          ", thin=", current_thin,
-          ", chains=", tuning_n_chains
-        ),
-        value = min(0.2 + 0.15 * round_i, 0.7)
-      )
 
       tune_fit <- run_uscr_chains(
         code = code,
@@ -1193,9 +1141,9 @@ run_USCR <- function(out,
       samples_all <- do.call(rbind, samples_list)
       psi_post <- samples_all[, "psi"]
 
-      current_rhat <- safe_rhat_max(samples_list)
+      rhat <- safe_rhat_max(samples_list)
       M_too_small <- mean(psi_post > psi_threshold, na.rm = TRUE) > psi_prob_cutoff
-      converged <- is.na(current_rhat) || current_rhat <= rhat_target
+      converged <- is.na(rhat) || rhat <= rhat_target
 
       adapt_log[[round_i]] <- data.frame(
         round = round_i,
@@ -1204,7 +1152,7 @@ run_USCR <- function(out,
         nburnin = burnin,
         thin = current_thin,
         n_chains = tuning_n_chains,
-        rhat_max = current_rhat,
+        rhat_max = rhat,
         M_too_small = M_too_small,
         stringsAsFactors = FALSE
       )
@@ -1218,9 +1166,7 @@ run_USCR <- function(out,
       if (!converged) {
         current_iter <- current_iter * 2L
         current_thin <- max(1L, floor((current_iter - burnin) / 1000))
-      }
-
-      if (converged && M_too_small) {
+      } else if (M_too_small) {
         current_M <- current_M * 2L
       }
     }
@@ -1244,16 +1190,6 @@ run_USCR <- function(out,
   final_data <- list(
     y = as.numeric(camera_counts),
     in_ss = rep(1L, final_const$M)
-  )
-  report_status(
-    "final_run",
-    paste0(
-      "USCR final run: M=", final_const$M,
-      ", iter=", final_iter,
-      ", thin=", final_thin,
-      ", chains=", n_chains
-    ),
-    value = 0.8
   )
 
   if (isTRUE(verbose)) {
@@ -1401,3 +1337,4 @@ waic_model_average <- function(rem_fit,
     summary_table = table_out
   )
 }
+

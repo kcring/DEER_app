@@ -6,7 +6,7 @@
 
 ## Overview
 
-The DEER App provides a user-friendly interface for running three Bayesian models (uSCR, REM, and TTE) to estimate deer density from camera trap data. The app supports both simulated data and real-world National Park Service (NPS) data formats, with model-averaged results using WAIC weights.
+The DEER App provides a user-friendly interface for running three Bayesian models (uSCR, REM, and TTE) to estimate deer density from camera trap data. For **uploaded NPS-format data**, results are combined with **WAIC-based model averaging**. On the **simulated** toy grid, only **uSCR** is fit; REM and TTE run on real uploads only.
 
 ## Features
 
@@ -16,11 +16,11 @@ The DEER App provides a user-friendly interface for running three Bayesian model
   - **TTE** (Time-to-Event): Models the time between detections to estimate density
 
 - **Data Options:**
-  - Simulate camera trap data with customizable parameters
+  - Simulate camera trap data with customizable parameters (uSCR on simulated data; REM/TTE on NPS uploads)
   - Upload NPS-format deployment and images CSV files
 
-- **Model Averaging:**
-  - WAIC-based model averaging across all three models
+- **Model Averaging (NPS data):**
+  - WAIC-based model averaging across REM, TTE, and USCR
   - Weighted and unweighted density estimates with 95% credible intervals
 
 - **Interactive Visualizations:**
@@ -39,34 +39,38 @@ The DEER App provides a user-friendly interface for running three Bayesian model
 
 ### Required R Packages
 
-The app will automatically install missing packages, but you can also install them manually:
+The app checks required packages on startup and can install missing ones automatically. You can also install them manually:
 
 ```r
 install.packages(c(
-  "shiny", "bslib", "DT", "ggplot2", "dplyr", "tidyr",
+  "shiny", "bslib", "shinyjs", "DT", "ggplot2", "dplyr", "tidyr",
   "readr", "purrr", "stringr", "secr", "data.table",
   "leaflet", "ggrepel",
-  "nimble", "nimbleHMC", "parallel", "MCMCvis", "lubridate",
-  "calecopal"
+  "nimble", "parallel", "MCMCvis", "lubridate"
 ))
 ```
 
 **Note:** Some packages may require additional system dependencies:
-- `nimble` and `nimbleHMC` require a C++ compiler
+- `nimble` requires a C++ compiler (for model compilation)
 - `leaflet` requires system libraries for spatial data
 
 ### Running the App
 
-1. Clone or download this repository
-2. Open `app.R` in RStudio
-3. Click "Run App" or run:
+1. Clone or download this repository:
+   ```bash
+   git clone <repository-url>
+   cd deer_app_v2
+   ```
+2. Open `app.R` in RStudio, or from R set the working directory to the project folder.
+3. Click **Run App** or run:
    ```r
    shiny::runApp()
    ```
 
-Alternatively, from the command line:
+From the command line:
+
 ```bash
-Rscript -e "shiny::runApp()"
+Rscript -e "shiny::runApp('/path/to/deer_app_v2')"
 ```
 
 ## Usage
@@ -74,44 +78,52 @@ Rscript -e "shiny::runApp()"
 ### Step 1: Simulate or Upload Data
 
 **Option 1: Simulate Data**
-- Navigate to the "Simulate data" tab
+- Navigate to the **Simulate data** tab
 - Adjust simulation parameters (grid size, spacing, days, density, etc.)
-- Click "Simulate grid" to generate toy data
+- Click **Simulate grid** to generate toy data
+- Run **USCR on simulated data** from the **USCR** tab; use **Compare & combine** for the USCR-only summary
 
 **Option 2: Upload NPS Data**
 - Prepare two CSV files:
   - **Deployment file**: Camera deployment information
   - **Images file**: Detection records
-- See the "Add your data" tab for required column specifications
+- See the **Add your data** tab for required column specifications (including **`Timestamp`** on images)
 - Upload files using the file input controls
 
 ### Step 2: Review Data Summary
 
-- Check the "Data summary" tab to verify your data
+- Check the **Data summary** tab to verify your data
 - Review deployment summaries, species detections, and spatial distributions
 
 ### Step 3: Run Models
 
 Navigate to the model tabs (USCR, REM, TTE):
-- Separate "Run" buttons for simulated vs. NPS data
-- Progress bars show model compilation and MCMC sampling status
-- "Stop" buttons allow you to terminate long-running models
+- **Simulated data:** run **USCR** from the USCR tab
+- **NPS data:** run each model from its tab with the NPS buttons
+- Progress bars show model compilation and MCMC sampling status where applicable
+- **Stop** buttons allow you to terminate long-running models
 - Results appear below the buttons when complete
 
-**Advanced Settings:**
-- Click "Advanced" under "Settings mode" to adjust:
+**Model settings:**
+- Open the **Model settings** tab, then choose **Advanced** to adjust:
   - MCMC iterations, burnin, thinning
   - Number of chains
-  - Prior parameters
+  - Prior parameters (independent priors per analysis; see **Meta-analysis** below)
   - Model-specific settings
+
+**Meta-analysis:** The app uses independent informative priors for each dataset. Pooling across parks with hyperpriors is not implemented; combine posterior outputs externally if you run multi-study syntheses.
 
 ### Step 4: Compare & Combine Results
 
-- Use the "Compare & combine" tab to view:
-  - WAIC values and weights for each model
-  - Model-averaged density estimates (deer/mi²)
-  - 95% credible intervals
-  - Probability of exceeding threshold densities
+- **Compare & combine** tab:
+  - **Simulated:** USCR density summary (single model)
+  - **NPS:** WAIC values and weights, model-averaged density (deer/mi²), 95% credible intervals, probability of exceeding threshold densities
+- Download **CSV** posterior summaries (parameter names, mean, 2.5% and 97.5% quantiles) from the same tab
+
+### Shapefile workflow
+
+- **Current:** Upload deployment and images **CSVs** only. Use the **Shapefile (planned)** tab in the app for the roadmap.
+- **Future:** Optional study-area polygon (e.g. GeoPackage or shapefile) for clipping and state-space definition is not implemented yet.
 
 ## File Structure
 
@@ -124,7 +136,8 @@ deer_app_v2/
 ├── www/
 │   ├── deer_app_logo.png    # Main app logo
 │   ├── wvu_logo.png         # WVU logo
-│   └── nps_logo.png         # NPS logo
+│   ├── nps_logo.png         # NPS logo
+│   └── usgs_logo.png        # Optional; add only with USGS permission (see below)
 ├── README.md                # This file
 └── deer_app_v2.Rproj        # RStudio project file
 ```
@@ -138,14 +151,15 @@ deer_app_v2/
 - **Start Date**: Camera deployment start (MM/DD/YYYY or MM/DD/YY)
 - **End Date**: Camera deployment end (MM/DD/YYYY or MM/DD/YY)
 - **Detection Distance**: Detection radius in meters
+- **Camera Functioning**: `Yes` or `No` (common variants like `TRUE`/`FALSE`/`1`/`0` are normalized on import)
 
 ### Images File Required Columns:
 - **Site Name**: Must match deployment file
-- **Date**: Detection date (MM/DD/YYYY or MM/DD/YY)
+- **Timestamp**: Detection date-time (the app expects this column name; see **Add your data** for format details)
 - **Species**: Species name (deer species will be standardized)
-- **Time**: Detection time (optional, for temporal analysis)
+- Additional columns per **Add your data** (e.g. **Cluster ID**, coordinates)
 
-See the "Add your data" tab in the app for detailed column specifications.
+See the **Add your data** tab in the app for detailed column specifications.
 
 ## Model Details
 
@@ -175,6 +189,16 @@ See the "Add your data" tab in the app for detailed column specifications.
 
 - All models use parallel processing when multiple chains are specified
 
+## Deployment and concurrent users
+
+- **Single session:** `shiny::runApp()` is intended for one analyst at a time on a local or shared machine.
+- **Concurrent users:** A production deployment (e.g. **Shiny Server**, **Posit Connect**, or **shinyapps.io**) runs one R process per app instance; multiple users share that process and can block each other during long MCMC runs. For many simultaneous users, plan **multiple workers** or separate instances and sufficient CPU/RAM.
+- **Tab UX:** The app scrolls to the top when you switch main tabs (`shinyjs`) so long pages do not leave you mid-scroll.
+
+## USGS logo
+
+The UI can show a USGS mark if you add `www/usgs_logo.png`. **Use official marks only with USGS approval** and follow [USGS visual identity guidance](https://www.usgs.gov/about/organization/science-support/visual-identity). If the file is absent, the app shows a short note instead.
+
 ## Troubleshooting
 
 **Models not running:**
@@ -185,7 +209,7 @@ See the "Add your data" tab in the app for detailed column specifications.
 
 **LaTeX equations not rendering:**
 - The app uses MathJax for equation rendering
-- If equations don't appear, try refreshing the page
+- If equations do not appear, try refreshing the page
 - Check browser console for JavaScript errors
 
 **Memory issues:**
@@ -209,6 +233,8 @@ License to be determined.
 ### Model Development
 The underlying models and code were created by **Dr. Amanda Van Buskirk** under the advisement of **Dr. Christopher Rota** in the [**Rota Quantitative Ecology Lab**](https://sites.google.com/mix.wvu.edu/rotalab/home) within the **Davis College of Agriculture and Natural Resources at West Virginia University**.
 
+Collaboration and feedback from **Laura Finley** (USGS, West Virginia Cooperative Fish and Wildlife Research Unit, WVU) helped shape QC checks and model integration. Any **USGS logo** in the app must follow agency approval rules (see **USGS logo** above).
+
 ### Shiny App Development
 This Shiny application was developed as part of the **Science in the Parks Communications Fellowship**, a collaborative effort between the **Ecological Society of America (ESA)** and the **National Park Service (NPS)**. Learn more: [https://esa.org/programs/scip/](https://esa.org/programs/scip/)
 
@@ -218,7 +244,7 @@ This Shiny application was developed as part of the **Science in the Parks Commu
 - **Mary Joy Mulumba** (ESA) - Mentor
 
 ### Technical Acknowledgments
-- Built with R Shiny, NIMBLE, and the `calecopal` color palette
+- Built with R Shiny and NIMBLE
 - West Virginia University (WVU)
 - National Park Service (NPS)
 
@@ -233,4 +259,3 @@ GitHub: [@kcring](https://github.com/kcring)
 
 **DEER App** — Density Estimation from Encounter Rates  
 uSCR · REM · TTE — unmarked camera methods, model‑averaged to deer/mi².
-

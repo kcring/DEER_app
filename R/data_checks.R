@@ -225,12 +225,13 @@ check_deployments <- function(deployment, images = NULL) {
       }
     }
     
-    # Camera Malfunction Date: if images are supplied, only required when that site has images
+    # Camera Malfunction Date: only check once images are available,
+    # and only for malfunctioning sites that actually have images.
     cam_func <- deployment$`Camera Functioning`[i]
     if (!is.na(cam_func) && tolower(cam_func) == "no") {
       val <- deployment$`Camera Malfunction Date`[i]
       cam_id <- deployment$`Site Name`[i]
-      if (is.null(images) || nrow(images) == 0) {
+      if (!is.null(images) && nrow(images) > 0 && cam_id %in% images$`Site Name`) {
         if (is.na(val) || val == "") {
           issues <- c(issues, paste("❌ Camera Malfunction Date missing in row", i,
                                     " — required because Camera Functioning = No"))
@@ -238,16 +239,6 @@ check_deployments <- function(deployment, images = NULL) {
           issues <- c(issues, paste("❌ Bad date in Camera Malfunction Date row", i, ":", val,
                                     " — should be mm/dd/yyyy"))
         }
-      } else if (cam_id %in% images$`Site Name`) {
-        if (is.na(val) || val == "") {
-          issues <- c(issues, paste("❌ Camera Malfunction Date missing in row", i,
-                                    " — required because Camera Functioning = No"))
-        } else if (is.na(as.Date(val, format = "%m/%d/%Y"))) {
-          issues <- c(issues, paste("❌ Bad date in Camera Malfunction Date row", i, ":", val,
-                                    " — should be mm/dd/yyyy"))
-        }
-      } else {
-        message("No images for site ", cam_id, " — skipping Malfunction Date check")
       }
     }
     
@@ -329,7 +320,9 @@ check_deployments <- function(deployment, images = NULL) {
 # QC: check_images (as before)
 # -------------------------------------------------------------------
 
-check_images <- function(images, deployments) {
+check_images <- function(images, deployments, survey_year = NULL) {
+  # survey_year is retained for backward compatibility with older callers.
+  # The current app relies on parsed image timestamps instead.
   issues <- c()
   fixes  <- c()
   
@@ -640,31 +633,49 @@ standardize_deer_species <- function(images) {
 }
 
 deer_summary_per_site <- function(images) {
-  deer_images <- images %>%
-    dplyr::filter(grepl("Deer", Species, ignore.case = TRUE))
+  species_summary_per_site(images, "Deer")
+}
+
+filter_species_rows <- function(images, species_name) {
+  species_name <- trimws(as.character(species_name)[1])
+  images %>%
+    dplyr::filter(
+      !is.na(Species),
+      tolower(trimws(Species)) == tolower(species_name)
+    )
+}
+
+species_summary_per_site <- function(images, species_name) {
+  species_images <- filter_species_rows(images, species_name)
   
-  deer_images %>%
+  species_images %>%
     dplyr::group_by(`Site Name`) %>%
     dplyr::summarise(
-      deer_images     = dplyr::n(),
-      deer_detections = sum(as.numeric(`Sighting Count`), na.rm = TRUE),
+      images = dplyr::n(),
+      detections = sum(as.numeric(`Sighting Count`), na.rm = TRUE),
       .groups = "drop"
     )
 }
 
 deer_counts_per_camera <- function(images) {
-  images %>%
-    dplyr::filter(Species == "Deer") %>%
+  species_counts_per_camera(images, "Deer")
+}
+
+species_counts_per_camera <- function(images, species_name) {
+  filter_species_rows(images, species_name) %>%
     dplyr::group_by(`Site Name`, Latitude, Longitude) %>%
     dplyr::summarise(
-      total_deer = sum(as.numeric(`Sighting Count`), na.rm = TRUE),
+      total_detections = sum(as.numeric(`Sighting Count`), na.rm = TRUE),
       .groups = "drop"
     )
 }
 
 deer_daily_detections <- function(images) {
-  images %>%
-    dplyr::filter(Species == "Deer") %>%
+  species_daily_detections(images, "Deer")
+}
+
+species_daily_detections <- function(images, species_name) {
+  filter_species_rows(images, species_name) %>%
     dplyr::mutate(Date = as.Date(Timestamp)) %>%
     dplyr::group_by(`Site Name`, Date) %>%
     dplyr::summarise(

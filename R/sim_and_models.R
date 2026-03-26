@@ -153,6 +153,97 @@ sim_model_inputs <- function(sim,
   )
 }
 
+build_teaching_sim_grid <- function(n_side, spacing_m, detection_radius_m, days) {
+  coords <- expand.grid(
+    x = seq(0, by = spacing_m, length.out = n_side),
+    y = seq(0, by = spacing_m, length.out = n_side)
+  )
+  coords <- coords[order(coords$y, coords$x), , drop = FALSE]
+  coords$x <- coords$x - mean(range(coords$x))
+  coords$y <- coords$y - mean(range(coords$y))
+  
+  coords |>
+    dplyr::mutate(
+      Site = paste0("C", dplyr::row_number()),
+      utm_e = x / 1000,
+      utm_n = y / 1000,
+      `Detection Distance` = detection_radius_m,
+      `Start Index` = 1L,
+      `End Index` = as.integer(days)
+    )
+}
+
+simulate_teaching_counts <- function(model = c("REM", "TTE"),
+                                     n_side = 5,
+                                     spacing_m = 300,
+                                     days = 21,
+                                     D_per_km2 = 25,
+                                     detection_radius_m = 12,
+                                     theta_deg = 55,
+                                     v_km_day = 4,
+                                     sd_eps = 0.2,
+                                     seed = 1) {
+  model <- match.arg(model)
+  quiet_require("dplyr")
+  
+  if (n_side < 1 || days < 1 || spacing_m <= 0 || detection_radius_m <= 0) {
+    stop("Teaching simulator inputs must be positive.", call. = FALSE)
+  }
+  if (D_per_km2 < 0 || v_km_day <= 0 || sd_eps < 0) {
+    stop("Density, movement speed, and heterogeneity inputs are out of range.", call. = FALSE)
+  }
+  
+  set.seed(seed)
+  
+  out <- build_teaching_sim_grid(
+    n_side = n_side,
+    spacing_m = spacing_m,
+    detection_radius_m = detection_radius_m,
+    days = days
+  )
+  
+  J <- nrow(out)
+  camera_days <- rep(as.numeric(days), J)
+  r_km <- rep(detection_radius_m / 1000, J)
+  eps <- stats::rnorm(J, mean = 0, sd = sd_eps)
+  
+  if (identical(model, "REM")) {
+    theta_rad <- theta_deg * pi / 180
+    lambda <- ((2 + theta_rad) / pi) * v_km_day * r_km * D_per_km2 * camera_days * exp(eps)
+  } else {
+    area_km2 <- pi * r_km^2 * theta_deg / 360
+    time_unit <- 0.59 * r_km / v_km_day
+    tte_units <- camera_days / time_unit
+    lambda <- D_per_km2 * tte_units * area_km2 * exp(eps)
+  }
+  
+  camera_counts <- stats::rpois(J, lambda = lambda)
+  
+  list(
+    model = model,
+    out = out,
+    camera_counts = camera_counts,
+    camera_days = camera_days,
+    truth = list(
+      model = model,
+      D_per_km2 = D_per_km2,
+      D_per_mi2 = D_per_km2 * 2.59,
+      detection_radius_m = detection_radius_m,
+      theta_deg = theta_deg,
+      v_km_day = v_km_day,
+      sd_eps = sd_eps,
+      seed = seed,
+      n_cams = J,
+      n_side = n_side,
+      spacing_m = spacing_m,
+      days = days,
+      mean_lambda = mean(lambda),
+      total_expected = sum(lambda),
+      total_observed = sum(camera_counts)
+    )
+  )
+}
+
 # Back-compatible alias used by older app code
 build_sim_data_for_nimble <- function(ch, detection_radius_m) {
   sim_model_inputs(

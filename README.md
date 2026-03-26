@@ -13,7 +13,7 @@ The DEER App provides a user-friendly interface for running three Bayesian model
 - **Three Bayesian Models:**
   - **uSCR** (Unmarked Spatial Capture–Recapture): Estimates deer density by learning from spatial detection patterns across a camera array
   - **REM** (Random Encounter Model): Converts encounter rates into density, correcting for movement speed and camera view geometry
-  - **TTE** (Time-to-Event): Models the time between detections to estimate density
+  - **TTE** (Time-to-Event): Uses deer detection events per camera, camera-days, and viewshed geometry to estimate density
 
 - **Data Options:**
   - Simulate camera trap data with customizable parameters (uSCR on simulated data; REM/TTE on NPS uploads)
@@ -145,21 +145,31 @@ deer_app_v2/
 ## Data Format Requirements
 
 ### Deployment File Required Columns:
+- **Park**: 4-character park code
 - **Site Name**: Camera location identifier
-- **Latitude**: Decimal degrees
-- **Longitude**: Decimal degrees
-- **Start Date**: Camera deployment start (MM/DD/YYYY or MM/DD/YY)
-- **End Date**: Camera deployment end (MM/DD/YYYY or MM/DD/YY)
-- **Detection Distance**: Detection radius in meters
+- **Camera ID**: Camera identifier
+- **SD Card ID**: SD card identifier
+- **Start Date / End Date**: Deployment dates in `MM/DD/YYYY`
+- **Start Time / End Time**: Deployment times in 24-hour format
+- **Latitude / Longitude**: Decimal degrees
+- **Camera Height**: Numeric camera height
+- **Camera Orientation**: Cardinal direction or 0-359 degrees
 - **Camera Functioning**: `Yes` or `No` (common variants like `TRUE`/`FALSE`/`1`/`0` are normalized on import)
+- **Camera Malfunction Date**: Keep the column in the file; fill it when `Camera Functioning = No` for a site with images
+- **Detection Distance**: Detection radius in meters
+- **Notes**: Keep the column even if some rows are blank
 
 ### Images File Required Columns:
 - **Site Name**: Must match deployment file
+- **Latitude / Longitude**: Decimal degrees
 - **Timestamp**: Detection date-time (the app expects this column name; see **Add your data** for format details)
 - **Species**: Species name (deer species will be standardized)
-- Additional columns per **Add your data** (e.g. **Cluster ID**, coordinates)
+- **Sighting Count**: Number of animals in the image; pipe-delimited values are allowed for multi-species rows
+- **Image URL**: Image reference/link column used by the QC pipeline
+- **Cluster ID**: Unique identifier for independent detection events
 
 See the **Add your data** tab in the app for detailed column specifications.
+Cross-year winter surveys (for example December to January) are supported; the app uses the actual deployment dates/times and image timestamps, so no separate `Survey Year` field is required.
 
 ## Model Details
 
@@ -176,7 +186,7 @@ See the **Add your data** tab in the app for detailed column specifications.
 ### TTE (Time-to-Event)
 - **Pros:** Uses temporal information, accounts for detection heterogeneity
 - **Cons:** Requires detection distance measurements, assumes Poisson process
-- Models time between detections to estimate encounter rates and density
+- In this app, uses deer detection events per camera plus camera-days and viewshed geometry to estimate density
 
 ## Performance Notes
 

@@ -9,7 +9,8 @@ needs <- c(
   "shiny", "bslib", "DT", "ggplot2", "dplyr", "tidyr",
   "readr", "purrr", "stringr", "secr", "data.table",
   "leaflet", "ggrepel", "shinyjs",
-  "nimble", "parallel", "MCMCvis", "lubridate", "sf", "tibble"
+  "nimble", "parallel", "MCMCvis", "lubridate", "sf", "tibble",
+  "future", "promises"
 )
 
 # Redwood-inspired palette (hex only — no extra color package)
@@ -53,7 +54,19 @@ suppressPackageStartupMessages({
   library(sf)
   library(nimble)
   library(shinyjs)
+  library(future)
+  library(promises)
 })
+
+# Conservative async worker pool for server-side background REM jobs.
+# Keep this small because the model code can also use parallel chains internally.
+available_cores <- suppressWarnings(parallel::detectCores(logical = TRUE))
+if (is.na(available_cores) || available_cores < 2) {
+  async_workers <- 1L
+} else {
+  async_workers <- min(2L, available_cores - 1L)
+}
+future::plan(future::multisession, workers = async_workers)
 
 # -------------------------------------------------------------------
 # Helper files
@@ -412,6 +425,9 @@ ui <- page_fillable(
         width: auto;
         flex: 0 0 auto;
       }
+      .banner-logo-nps {
+        height: clamp(88px, 10vw, 132px);
+      }
       .banner-logo-main {
         height: clamp(320px, 34vw, 430px);
         width: auto;
@@ -424,7 +440,7 @@ ui <- page_fillable(
     tagList(
       tags$img(src = "wvu_logo.png", alt = "WVU", class = "banner-logo-side"),
       tags$img(src = "deer_app_logo.png", alt = "DEER App", class = "banner-logo-main"),
-      tags$img(src = "nps_logo.png", alt = "NPS", class = "banner-logo-side"),
+      tags$img(src = "nps_logo.png", alt = "NPS", class = "banner-logo-side banner-logo-nps"),
       if (file.exists(file.path("www", "usgs_logo.png"))) {
         tags$img(src = "usgs_logo.png", alt = "USGS", class = "banner-logo-side")
       } else {
@@ -443,7 +459,6 @@ ui <- page_fillable(
             class = "hero",
             tags$div(
               style = "max-width: 980px; margin: 0 auto; padding: 0 16px;",
-              tags$span(class = "badge", style = "background: var(--rw4); border: 1px solid var(--rw3); color: var(--ink);", "Camera surveys • Parks & collaborators"),
               tags$h1(style = "color: var(--ink); margin-top: 0.5rem; text-align: center;",
                 "DEER App"
               ),
@@ -455,7 +470,7 @@ ui <- page_fillable(
                 tags$span(style = "color: var(--rw3);", "R"), tags$span(style = "color: #666;", "ates")
               ),
               tags$p(class = "small", style = "opacity: 0.9; color: var(--muted); text-align: center;",
-                "uSCR · REM · TTE — unmarked camera methods, model‑averaged to deer/mi²."
+                "uSCR · REM · TTE — three unmarked camera methods for estimating deer density, reported as deer/mi² by default."
               )
             )
           ),
@@ -467,11 +482,14 @@ ui <- page_fillable(
               tags$h1("Welcome to the DEER app!"),
               tags$h2(style = "font-size: 1.1rem; margin-top: 0.5rem; margin-bottom: 1rem; color: var(--muted); font-weight: normal;", "What it does"),
               tags$p(class = "lead",
-                "We use", tags$strong("three complementary models"), "to estimate deer density from unmarked camera detections.",
-                "We then", tags$strong("average the model estimates"), "to report", tags$strong("density (deer/mi²)"), "with credible intervals.",
-                "No single method is perfect, so the app helps users", tags$strong("compare, diagnose, and combine"), "results from multiple approaches.",
-                "The current upload workflow expects", tags$strong("NPS-style deployment and images CSVs"), ", but the broader goal is to support",
-                tags$strong("consistent deer monitoring across parks and partner projects"), "."
+                "The DEER app helps estimate ", tags$strong("deer density in parks"), " from ",
+                tags$strong("unmarked camera detections"), ". It fits ", tags$strong("three complementary models"),
+                ", reports ", tags$strong("credible intervals and variability"), ", and lets users ",
+                tags$strong("compare, diagnose, and average results"), ", rather than relying on a point estimate alone. The current upload workflow expects ",
+                "data on ", tags$strong("camera deployment"), " (e.g. where and when cameras were set and began recording) and ",
+                tags$strong("images CSVs"), ". The broader goal is a ", tags$strong("consistent, reproducible workflow"),
+                " that estimates ", tags$strong("deer and other animal densities"), " from camera trap data without ",
+                tags$strong("tedious individual marking strategies"), "."
               ),
               tags$div(class = "divider"),
               tags$div(
@@ -480,25 +498,25 @@ ui <- page_fillable(
                   class = "about-card",
                   tags$h3("Efficient!"),
                   tags$ul(
-                    tags$li("No marking or individual ID; count independent events via", tags$em("Cluster ID"), "."),
-                    tags$li("A short deployment window (often winter, about 2-8 weeks) can help closure assumptions.")
+                    tags$li("Uses unmarked detections rather than requiring marked animals or individual IDs."),
+                    tags$li("Pairs field data with a streamlined upload, QC, and analysis workflow that can benefit from AI-assisted image tagging.")
                   )
                 ),
                 tags$div(
                   class = "about-card",
                   tags$h3("Reproducible!"),
                   tags$ul(
-                    tags$li("Consistent camera placement and spacing improve comparability when array designs are available."),
-                    tags$li("Standardized CSVs and workflow make park-to-park or project-to-project comparisons easier.")
+                    tags$li("Standardized CSV checks and shared defaults make analyses easier to repeat."),
+                    tags$li("Downloadable per-model summaries support park-to-park or project-to-project comparisons.")
                   )
                 ),
                 tags$div(
                   class = "about-card",
                   tags$h3("Rigorous"),
                   tags$ul(
-                    tags$li("Report density with uncertainty (credible intervals)."),
-                    tags$li("WAIC‑weighted averaging across REM, TTE, and USCR for uploaded NPS data."),
-                    tags$li("uSCR estimates density from unmarked spatial detections—no individual IDs.")
+                    tags$li("Reports deer density with uncertainty, including credible intervals."),
+                    tags$li("Uses three model types and a WAIC-weighted model-averaged estimate for uploaded NPS data."),
+                    tags$li("Brings together spatial and encounter-rate approaches in one transparent workflow.")
                   )
                 )
               )
@@ -512,77 +530,102 @@ ui <- page_fillable(
               tags$div(
                 class = "about-card",
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 1rem;", "Step 1: Simulate or Upload data"),
-                tags$p(
-                  "You have two options for data input:"
-                ),
+                tags$p("You can explore the workflow with simulated data or analyze field data."),
                 tags$div(
                   style = "margin: 1rem 0;",
                   tags$h4(style = "font-size: 1.1rem; font-weight: 500;", "Option 1: Simulate data"),
                   tags$p(
-                    "Go to the", tags$strong("'Simulate data'"), "tab. Here you can adjust the simulation parameters:",
-                    tags$ul(
-                      tags$li("Grid dimension (n × n cameras)"),
-                      tags$li("Camera spacing (meters)"),
-                      tags$li("Number of days"),
-                      tags$li("True density (deer/km²)"),
-                      tags$li("Detection parameters (sigma, lambda0)"),
-                      tags$li("Random seed for reproducibility")
-                    ),
-                    "Press the", tags$strong("'Simulate grid'"), "button to generate toy data, then run", tags$strong("USCR on simulated data"), "from the USCR tab.",
-                    "REM and TTE use the uploaded NPS workflow only; the", tags$strong("Compare & combine"), "tab for simulated data summarizes the USCR fit only."
+                    "Go to the ", tags$strong("'Simulate data'"), " tab. The app now includes ",
+                    tags$strong("two simulation paths"), ":"
+                  ),
+                  tags$ul(
+                    tags$li(tags$strong("uSCR grid simulator"), " — spatial toy data generated under the uSCR assumptions, useful for exploring the full spatial workflow."),
+                    tags$li(tags$strong("REM/TTE teaching simulators"), " — model-based encounter-rate simulators for learning or debugging those methods individually.")
+                  ),
+                  tags$p("For the uSCR grid simulator you can adjust:"),
+                  tags$ul(
+                    tags$li("Grid dimension (n × n cameras)"),
+                    tags$li("Camera spacing (meters)"),
+                    tags$li("Number of days"),
+                    tags$li("True density (deer/km²)"),
+                    tags$li("Detection parameters (sigma, lambda0)"),
+                    tags$li("Random seed for reproducibility")
+                  ),
+                  tags$p(
+                    "Press ", tags$strong("'Simulate grid'"), " to generate the spatial toy data, then run ",
+                    tags$strong("USCR on simulated data"), " from the USCR tab. If you want method-specific simulated data for ",
+                    tags$strong("REM"), " or ", tags$strong("TTE"), ", use the ",
+                    tags$strong("teaching simulator"), " section in the same tab and then run those models from their own tabs."
+                  ),
+                  tags$p(
+                    "The ", tags$strong("Compare & combine"), " tab summarizes the ",
+                    tags$strong("uSCR simulated workflow only"), "; the REM/TTE teaching simulators are intended for model-specific learning rather than cross-model combination."
                   )
                 ),
                 tags$div(
                   style = "margin: 1rem 0;",
                   tags$h4(style = "font-size: 1.1rem; font-weight: 500;", "Option 2: Upload your field data"),
+                  tags$p("You will need two data files:"),
+                  tags$ul(
+                    tags$li(tags$strong("Deployment CSV"), " — camera deployment information such as locations, dates, and detection distances."),
+                    tags$li(tags$strong("Images CSV"), " — detection records such as timestamps, species, and ", tags$strong("Cluster ID"), " values. In this workflow, ", tags$strong("Cluster ID"), " means the unique identifier for an independent encounter event.")
+                  ),
                   tags$p(
-                    "You will need two data files:",
-                    tags$ul(
-                      tags$li(tags$strong("Deployment CSV"), "— Contains camera deployment information (locations, dates, detection distances)"),
-                      tags$li(tags$strong("Images CSV"), "— Contains detection data (timestamps, species, cluster IDs)")
-                    ),
-                    "The current upload pipeline expects", tags$strong("NPS-style CSV column names"), ".",
-                    "It is", tags$strong("crucially important"), "that the structure of your dataframes matches the requirements. Click the", 
-                    tags$strong("'Add your data'"), "tab to get more information on the required columns and data format. The app will automatically:",
-                    tags$ul(
-                      tags$li("Pre-clean column names and whitespace"),
-                      tags$li("Run quality checks on your data"),
-                      tags$li("Trim images to the first 56 days per camera")
-                    )
+                    "The current upload pipeline expects ", tags$strong("NPS-style CSV column names"), ". Recommended camera spacing and camera counts come from the protocol, but the app analyzes the data you provide rather than requiring one exact array design or minimum camera count to function."
+                  ),
+                  tags$p(
+                    "Click the ", tags$strong("'Add your data'"), " tab for column requirements and examples. The app will automatically:"
+                  ),
+                  tags$ul(
+                    tags$li("Pre-clean column names and whitespace"),
+                    tags$li("Run quality checks on your data"),
+                    tags$li("Currently trim images to the first 56 days per camera to match the park workflow")
                   )
                 ),
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 1rem;", "Step 2: Adjust settings (optional)"),
                 tags$p(
-                  "The models have default settings that work well for most cases. To change MCMC, priors, or detection geometry, open the",
-                  tags$strong("'Model settings'"), "tab, choose", tags$strong("Advanced"), ", and edit the fields.",
-                  tags$ul(
-                    tags$li("Adjust MCMC settings (iterations, burn-in, thinning, number of chains)"),
-                    tags$li("Modify priors for movement speed, detection parameters, or camera heterogeneity"),
-                    tags$li("Change camera detection angle (default: 55°)")
-                  )
+                  "The default settings work for many use cases. To change MCMC settings, priors, or detection geometry, open the ",
+                  tags$strong("'Model settings'"), " tab, choose ", tags$strong("Advanced"), ", and edit the fields."
+                ),
+                tags$ul(
+                  tags$li("Adjust MCMC settings such as iterations, burn-in, thinning, and number of chains."),
+                  tags$li("Modify priors for movement speed, viewshed or detection parameters, and camera heterogeneity."),
+                  tags$li("Change camera detection angle (default: 55°)."),
+                  tags$li("Remember that priors matter most for REM and TTE because speed and viewshed assumptions directly affect the density calculation.")
                 ),
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 1rem;", "Step 3: Run the models"),
                 tags$p(
-                  tags$strong("Simulated data:"), "run", tags$strong("USCR"), "from the USCR tab.",
-                  tags$strong("Uploaded field data:"), "use the", tags$strong("USCR"), ",", tags$strong("REM"), ", and", tags$strong("TTE"), "tabs—each has a run button for the uploaded-data workflow.",
-                  tags$ul(
-                    tags$li("Click the", tags$strong("'Run'"), "button for your data type"),
-                    tags$li("Models show", tags$strong("progress bars"), "and", tags$strong("status messages"), "where applicable"),
-                    tags$li("You can", tags$strong("stop a model run"), "using the red 'Stop' button if needed"),
-                    tags$li("Results appear below the buttons once each model completes")
-                  ),
-                  tags$em("Note:"), "USCR typically takes 30-60 minutes, while REM and TTE are faster (several minutes)."
+                  tags$strong("Simulated data:"), " run ", tags$strong("USCR"), " from the USCR tab for the spatial grid simulator, or run ",
+                  tags$strong("REM"), " or ", tags$strong("TTE"), " from their own tabs after creating the matching teaching simulator data."
+                ),
+                tags$p(
+                  tags$strong("Uploaded field data:"), " use the ", tags$strong("USCR"), ", ", tags$strong("REM"), ", and ", tags$strong("TTE"),
+                  " tabs. Each tab has its own run button and troubleshooting panel."
+                ),
+                tags$ul(
+                  tags$li("Click the ", tags$strong("'Run'"), " button for your data type."),
+                  tags$li("Watch progress bars, stage labels, and troubleshooting text where available."),
+                  tags$li("Use the red ", tags$strong("'Stop'"), " button when a model supports stopping."),
+                  tags$li("Results appear below the buttons once each model completes.")
+                ),
+                tags$p(
+                  tags$em("Note:"), " USCR can take longer than 60 minutes for high-density parks, larger arrays, or larger ", tags$code("M"),
+                  " settings, so plan to be patient and, if needed, leave the computer running. REM and TTE are usually faster."
                 ),
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 0.5rem;", "Step 4: Compare results"),
+                tags$p("Use the ", tags$strong("'Compare & combine'"), " tab to:"),
+                tags$ul(
+                  tags$li("For ", tags$strong("NPS data"), ": compute a WAIC-weighted combined estimate across all three models and export posterior summaries as CSV files."),
+                  tags$li("For ", tags$strong("simulated data"), ": review the uSCR simulated density summary."),
+                  tags$li("Compare model performance using WAIC values for uploaded NPS data."),
+                  tags$li("Download posterior summaries with parameter names, means, and 95% credible intervals.")
+                ),
                 tags$p(
-                  "Use the", tags$strong("'Compare & combine'"), "tab to:",
-                  tags$ul(
-                    tags$li("For", tags$strong("NPS data"), ": WAIC‑weighted averaging across all three models (and CSV exports of posterior summaries)"),
-                    tags$li("For", tags$strong("simulated data"), ": USCR density summary only"),
-                    tags$li("Compare model performance using WAIC values (NPS)"),
-                    tags$li("Download CSV posterior summaries (parameter names, mean, 95% CI)")
-                  ),
-                  "Reported density is", tags$strong("deer per square mile (mi²)"), "with credible intervals; for NPS data the combined estimate balances the three models."
+                  "The app currently reports ", tags$strong("deer per square mile (mi²)"), " by default, with credible intervals. Some inputs and simulations still use ",
+                  tags$strong("deer/km²"), " where noted."
+                ),
+                tags$p(
+                  tags$strong("Unit convention:"), " 1 deer/km² = 2.59 deer/mi², and 1 deer/mi² = 0.386 deer/km². The current app does not yet have a global unit toggle, so values are labeled explicitly where they appear."
                 )
               )
             ),
@@ -598,9 +641,9 @@ ui <- page_fillable(
                   class = "about-card",
                   tags$span(class = "tag tag-uscr", "uSCR"),
                   tags$p(
-                    tags$strong("Unmarked Spatial Capture–Recapture (uSCR)"), "—", tags$em("Chandler & Royle, 2013"), ".",
+                    tags$strong("Unmarked Spatial Capture–Recapture (uSCR)"), " — ", tags$em("Chandler & Royle, 2013"), ".",
                     tags$br(),
-                    tags$strong("Spatial pattern → density."), "Where detections fall across the array tells us density inside your park's defined state‑space."
+                    tags$strong("Spatial pattern → density."), " Where detections fall across the array informs density estimates inside the defined state-space."
                   ),
                   tags$div(
                     class = "pcbox",
@@ -608,28 +651,37 @@ ui <- page_fillable(
                       class = "pcsec",
                       tags$h4("Pros"),
                       tags$ul(
-                        tags$li("Density within a clearly defined area (state‑space)."),
-                        tags$li("No individual IDs; uses spatial correlation across cameras.")
+                        tags$li("Uses spatial information across the array and estimates density inside an explicit state-space."),
+                        tags$li("Produces density with uncertainty without requiring individual IDs.")
                       )
                     ),
                     tags$div(
                       class = "pcsec",
                       tags$h4("Cons"),
                       tags$ul(
-                        tags$li("Sensitive to camera spacing vs. movement scale; priors matter."),
-                        tags$li("Heavier compute/time than REM/TTE.")
+                        tags$li("Most computationally intensive option in the app."),
+                        tags$li("Sensitive to camera spacing, movement scale, and prior settings.")
                       )
                     )
                   ),
-                  tags$span(class = "ref", "Reference: Chandler, R.B. & Royle, J.A. (2013).")
+                  tags$span(
+                    class = "ref",
+                    "Reference: ",
+                    tags$a(
+                      href = "https://doi.org/10.1214/12-AOAS610",
+                      target = "_blank",
+                      style = "color: var(--rw1); text-decoration: underline;",
+                      "Chandler, R.B. & Royle, J.A. (2013)"
+                    )
+                  )
                 ),
                 tags$div(
                   class = "about-card",
                   tags$span(class = "tag tag-rem", "REM"),
                   tags$p(
-                    tags$strong("Random Encounter Model (REM)"), "—", tags$em("Rowcliffe et al., 2008"), ".",
+                    tags$strong("Random Encounter Model (REM)"), " — ", tags$em("Rowcliffe et al., 2008"), ".",
                     tags$br(),
-                    tags$strong("Encounters → density."), "Events per time become density using animal speed and the camera viewshed (radius & angle)."
+                    tags$strong("Events per unit time → density."), " Encounter rates are converted to density using animal speed and the camera viewshed."
                   ),
                   tags$div(
                     class = "pcbox",
@@ -637,28 +689,37 @@ ui <- page_fillable(
                       class = "pcsec",
                       tags$h4("Pros"),
                       tags$ul(
-                        tags$li("Simple and fast once speed & viewshed are known."),
-                        tags$li("Well‑defined area (collective viewsheds of the array).")
+                        tags$li("Works with unmarked detections and is faster than uSCR."),
+                        tags$li("Provides a practical encounter-rate approach when cameras are randomly placed and unbaited.")
                       )
                     ),
                     tags$div(
                       class = "pcsec",
                       tags$h4("Cons"),
                       tags$ul(
-                        tags$li("Requires accurate speed & viewshed; assumes random, unbaited placement and independence."),
-                        tags$li("Less spatial detail than uSCR.")
+                        tags$li("Priors for movement speed and viewshed matter."),
+                        tags$li("Assumes random, unbaited camera placement and provides less spatial detail than uSCR.")
                       )
                     )
                   ),
-                  tags$span(class = "ref", "Reference: Rowcliffe, J.M. et al. (2008).")
+                  tags$span(
+                    class = "ref",
+                    "Reference: ",
+                    tags$a(
+                      href = "https://doi.org/10.1111/j.1365-2664.2008.01473.x",
+                      target = "_blank",
+                      style = "color: var(--rw1); text-decoration: underline;",
+                      "Rowcliffe, J.M. et al. (2008)"
+                    )
+                  )
                 ),
                 tags$div(
                   class = "about-card",
                   tags$span(class = "tag tag-tte", "TTE"),
                   tags$p(
-                    tags$strong("Time‑to‑Event (TTE)"), "—", tags$em("Moeller et al., 2018"), ".",
+                    tags$strong("Time‑to‑Event (TTE)"), " — ", tags$em("Moeller et al., 2018"), ".",
                     tags$br(),
-                    tags$strong("Waiting time → density."), "Shorter time (or detection days) to first encounter implies higher density for the same viewshed & speed."
+                    tags$strong("Waiting time → density."), " Shorter effective time between encounters implies higher density when speed and viewshed are held fixed."
                   ),
                   tags$div(
                     class = "pcbox",
@@ -666,20 +727,20 @@ ui <- page_fillable(
                       class = "pcsec",
                       tags$h4("Pros"),
                       tags$ul(
-                        tags$li("Handles many zero‑days; complements REM/uSCR."),
-                        tags$li("Well‑matched to short winter closure periods.")
+                        tags$li("Works with unmarked detections and is faster than uSCR."),
+                        tags$li("Provides a second encounter-rate perspective that complements REM.")
                       )
                     ),
                     tags$div(
                       class = "pcsec",
                       tags$h4("Cons"),
                       tags$ul(
-                        tags$li("Shares REM assumptions; needs a speed prior to set time‑units."),
-                        tags$li("Sensitive to viewshed and time‑unit calibration.")
+                        tags$li("Priors for movement speed and viewshed matter here too."),
+                        tags$li("Shares many of the same placement and calibration assumptions as REM.")
                       )
                     )
                   ),
-                  tags$span(class = "ref", "Reference: Moeller, A.K. et al. (2018).")
+                  tags$span(class = "ref", "Reference: Moeller, A.K. et al. (2018, Ecosphere).")
                 )
               )
             ),
@@ -692,8 +753,10 @@ ui <- page_fillable(
               tags$div(
                 class = "about-card",
                 tags$p(
-                  tags$span(class = "kicker", "Final output:"),
-                  tags$strong("Deer per square mile (mi²)"), "with credible intervals, plus per‑model estimates for transparency."
+                  tags$span(class = "kicker", "Current default output:"),
+                  " ",
+                  tags$strong("Deer per square mile (mi²)"),
+                  " with credible intervals, plus per-model estimates and downloadable posterior summaries for transparency."
                 )
               )
             ),
@@ -707,16 +770,25 @@ ui <- page_fillable(
                 class = "about-card",
                 tags$h3(style = "font-size: 1.2rem; font-weight: 600; margin-top: 0.5rem;", "Model Development"),
                 tags$p(
-                  "The underlying models and code were created by", 
-                  tags$strong("Dr. Amanda Van Buskirk"), 
-                  "under the advisement of", 
-                  tags$strong("Dr. Christopher Rota"), 
-                  "in the", 
-                  tags$a(href = "https://sites.google.com/mix.wvu.edu/rotalab/home", target = "_blank",
-                         style = "color: var(--rw1); text-decoration: underline;",
-                         tags$strong("Rota Quantitative Ecology Lab")), 
-                  "within the", 
-                  tags$strong("Davis College of Agriculture and Natural Resources at West Virginia University"), 
+                  "The underlying models and code were created by ",
+                  tags$strong("Dr. Amanda Van Buskirk"),
+                  " with guidance from ",
+                  tags$a(
+                    href = "https://www.davis.wvu.edu/faculty-staff/directory/christopher-rota",
+                    target = "_blank",
+                    style = "color: var(--rw1); text-decoration: underline;",
+                    tags$strong("Dr. Christopher Rota")
+                  ),
+                  " at ",
+                  tags$strong("West Virginia University, Davis College of Agriculture and Natural Resources"),
+                  "."
+                ),
+                tags$p(
+                  style = "margin-top: 0.75rem;",
+                  "Scientific collaboration and feedback on model integration and quality control also came from ",
+                  tags$strong("Dr. Laura C. Gigliotti"),
+                  ", ",
+                  tags$strong("U.S. Geological Survey, West Virginia Cooperative Fish and Wildlife Research Unit, West Virginia University"),
                   "."
                 )
               ),
@@ -724,33 +796,27 @@ ui <- page_fillable(
                 class = "about-card",
                 tags$h3(style = "font-size: 1.2rem; font-weight: 600; margin-top: 0.5rem;", "Shiny App Development"),
                 tags$p(
-                  "This Shiny application was developed as part of the", 
+                  "This Shiny application was developed as part of the ", 
                   tags$a(href = "https://esa.org/programs/scip/", target = "_blank", 
                          style = "color: var(--rw1); text-decoration: underline;",
                          tags$strong("Science in the Parks Communications Fellowship")), 
-                  ", a collaborative effort between the", 
+                  ", a collaborative effort between the ", 
                   tags$strong("Ecological Society of America (ESA)"), 
-                  "and the", 
+                  " and the ", 
                   tags$strong("National Park Service (NPS)"), 
                   "."
                 ),
                 tags$p(
                   style = "margin-top: 0.75rem;",
                   tags$strong("Fellowship Support:"), tags$br(),
-                  "•", tags$strong("Dr. Brian Mitchell"), "(NPS) — Fellowship Liaison", tags$br(),
-                  "•", tags$strong("Jasjeet Dhanota"), "(ESA) — Mentor", tags$br(),
-                  "•", tags$strong("Mary Joy Mulumba"), "(ESA) — Mentor"
+                  "• ", tags$strong("Dr. Brian Mitchell"), " (NPS) — Fellowship Liaison", tags$br(),
+                  "• ", tags$strong("Jasjeet Dhanota"), " (ESA) — Mentor", tags$br(),
+                  "• ", tags$strong("Mary Joy Mulumba"), " (ESA) — Mentor"
                 )
               )
             ),
             
-            tags$div(class = "divider"),
-            
-            tags$div(
-              class = "small",
-              style = "margin-top: 22px; color: var(--muted);",
-              tags$p("Color palette: redwood‑inspired greens and browns (inline hex in", tags$code("app.R"), ").")
-            )
+            tags$div(class = "divider")
           )
         ),
         
@@ -1422,6 +1488,10 @@ ui <- page_fillable(
             actionButton("run_rem_nps", "Run REM on NPS data", class = "btn-primary"),
             actionButton("stop_rem_nps", "Stop", class = "btn-danger", style = "margin-left: 10px;"),
             style = "margin-bottom: 10px;"
+          ),
+          p(
+            style = "max-width: 52rem; color: var(--muted); margin-bottom: 0.75rem;",
+            "Server note: uploaded-data REM runs now start in a background worker so other sessions can keep using the app. For concurrency safety this path uses one MCMC chain on the server, even if the UI chain setting is higher. The Stop button cannot cancel an already-started background REM job yet."
           ),
           br(),
           verbatimTextOutput("rem_nps_text"),
@@ -2511,6 +2581,7 @@ server <- function(input, output, session) {
   uscr_nps_running <- reactiveVal(FALSE)
   rem_nps_running <- reactiveVal(FALSE)
   tte_nps_running <- reactiveVal(FALSE)
+  rem_nps_background <- reactiveVal(FALSE)
   
   # Stop flags for interrupting model runs
   stop_uscr_sim <- reactiveVal(FALSE)
@@ -2543,6 +2614,21 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$stop_rem_nps, {
+    if (isTRUE(rem_nps_background())) {
+      update_model_debug(
+        rem_nps_debug,
+        status = "running",
+        stage = "Background run in progress",
+        guidance = "This REM run is already running in a background worker. It will keep running until it finishes or fails; server-side cancellation is not available yet for this path.",
+        log_entry = "Stop requested, but background REM cancellation is not available."
+      )
+      showNotification(
+        "REM background jobs cannot be cancelled after launch yet. This run will keep going in the background.",
+        type = "warning",
+        duration = 8
+      )
+      return(NULL)
+    }
     stop_rem_nps(TRUE)
     stop_flags_env$stop_rem_nps <- TRUE
     showNotification("Stopping REM (NPS) run...", 
@@ -3080,8 +3166,36 @@ server <- function(input, output, session) {
   # --- REM: NPS ---
   
   observeEvent(input$run_rem_nps, {
+    if (rem_nps_running()) {
+      showNotification(
+        "REM (NPS) is already running in this session. Wait for it to finish before starting another REM job.",
+        type = "warning",
+        duration = 6
+      )
+      return(NULL)
+    }
     req(nps_model_inputs())
     d <- nps_model_inputs()
+    requested_chains <- as.integer(input$n_chains)
+    rem_context <- c(
+      summarize_rem_context(d),
+      paste("Chains requested in UI:", requested_chains),
+      "Background worker run: yes; server forces one chain for concurrency safety."
+    )
+    rem_args <- list(
+      y            = d$camera_counts,
+      r_km         = d$out$`Detection Distance` / 1000,
+      camera_days  = d$camera_days,
+      theta_deg    = input$theta,
+      iter         = input$iter_rem_tte,
+      burnin       = input$burnin_rem_tte,
+      thin         = input$thin_rem_tte,
+      n_chains     = 1L,
+      D_max        = input$D_max,
+      log_v_mean   = input$log_v_mean,
+      log_v_sd     = input$log_v_sd,
+      sd_eps_max   = input$sd_eps_max
+    )
     rem_nps_debug(make_model_debug(
       "REM",
       "Uploaded NPS data",
@@ -3091,11 +3205,11 @@ server <- function(input, output, session) {
     update_model_debug(
       rem_nps_debug,
       status = "running",
-      stage = "Preflight checks",
+      stage = "Queued background run",
       started_at = Sys.time(),
-      guidance = "REM only runs on uploaded NPS data in this app.",
+      guidance = "REM on uploaded NPS data now runs in a background worker so other sessions stay responsive. For server safety this path uses one MCMC chain, even if the UI chain setting is higher.",
       raw_error = NULL,
-      context = summarize_rem_context(d),
+      context = rem_context,
       log_entry = "NPS REM run requested."
     )
     validate(
@@ -3105,103 +3219,72 @@ server <- function(input, output, session) {
     
     # Reset stop flag
     stop_rem_nps(FALSE)
+    stop_flags_env$stop_rem_nps <- FALSE
     rem_nps_running(TRUE)
+    rem_nps_background(TRUE)
     rem_nps_fit(NULL)  # Clear previous results
     
-    showNotification("Running REM on NPS data... This may take several minutes.", 
-                     type = "message", duration = 10)
-    
-    fit <- tryCatch(
-      {
-        # Check if stopped before starting
-        if (stop_rem_nps()) {
-          showNotification("REM (NPS) run cancelled.", type = "warning")
-          return(NULL)
-        }
-        
-        withProgress(
-          message = "Running REM model",
-          detail = "Preparing REM inputs from uploaded NPS data...",
-          value = 0,
-          {
-            setProgress(0.15, detail = "Preparing REM inputs: deer events per camera and camera-days...")
-            update_model_debug(
-              rem_nps_debug,
-              stage = "Sampling",
-              log_entry = "Running REM chains in NIMBLE."
-            )
-            
-            # Check stop flag again before running
-            if (stop_rem_nps()) {
-              showNotification("REM (NPS) run cancelled.", type = "warning")
-              return(NULL)
-            }
-            
-            fit_result <- run_REM(
-              y            = d$camera_counts,
-              r_km         = d$out$`Detection Distance` / 1000,
-              camera_days  = d$camera_days,
-              theta_deg    = input$theta,
-              iter         = input$iter_rem_tte,
-              burnin       = input$burnin_rem_tte,
-              thin         = input$thin_rem_tte,
-              n_chains     = input$n_chains,
-              D_max        = input$D_max,
-              log_v_mean   = input$log_v_mean,
-              log_v_sd     = input$log_v_sd,
-              sd_eps_max   = input$sd_eps_max
-            )
-            setProgress(1.0, detail = "Complete!")
-            fit_result
-          }
-        )
-      },
-      error = function(e) {
-        if (stop_rem_nps()) {
-          update_model_debug(
-            rem_nps_debug,
-            status = "stopped",
-            stage = "Stopped by user",
-            finished_at = Sys.time(),
-            guidance = "The REM run was stopped manually before completion.",
-            raw_error = e$message,
-            log_entry = "NPS REM run stopped by user."
-          )
-          showNotification("REM (NPS) run stopped by user.", type = "warning")
-        } else {
-          update_model_debug(
-            rem_nps_debug,
-            status = "error",
-            stage = "Failed",
-            finished_at = Sys.time(),
-            guidance = friendly_model_error("REM", "uploaded NPS data", e$message),
-            raw_error = e$message,
-            log_entry = paste("NPS REM failed:", e$message)
-          )
-          showNotification(
-            paste("REM (NPS) failed:", e$message),
-            type = "error", duration = NULL
-          )
-        }
-        return(NULL)
-      },
-      finally = {
-        rem_nps_running(FALSE)
-        stop_rem_nps(FALSE)  # Reset stop flag
-      }
+    update_model_debug(
+      rem_nps_debug,
+      stage = "Background run in progress",
+      log_entry = paste(
+        "Submitted REM background job.",
+        "Requested chains =", requested_chains,
+        "but server REM jobs use 1 chain to reduce blocking across users."
+      )
     )
-    rem_nps_fit(fit)
-    if (!is.null(fit) && !stop_rem_nps()) {
+    
+    showNotification(
+      "REM on NPS data is running in the background. This session should stay responsive while it runs.",
+      type = "message",
+      duration = NULL,
+      id = "rem_nps_progress"
+    )
+    
+    rem_future <- future::future({
+      do.call(run_REM, rem_args)
+    })
+    
+    promises::as.promise(rem_future) %...>% (function(fit) {
+      removeNotification("rem_nps_progress")
+      rem_nps_fit(fit)
+      rem_nps_running(FALSE)
+      rem_nps_background(FALSE)
+      stop_rem_nps(FALSE)
+      stop_flags_env$stop_rem_nps <- FALSE
       update_model_debug(
         rem_nps_debug,
         status = "success",
         stage = "Complete",
         finished_at = Sys.time(),
-        guidance = "REM completed successfully. Review the summary above.",
-        log_entry = "NPS REM run completed."
+        guidance = "REM completed successfully in a background worker. Review the summary above.",
+        log_entry = "NPS REM background run completed."
       )
-      showNotification("REM (NPS) complete!", type = "message")
-    }
+      showNotification("REM (NPS) complete!", type = "message", duration = 5)
+      invisible(NULL)
+    }) %...!% (function(e) {
+      removeNotification("rem_nps_progress")
+      rem_nps_fit(NULL)
+      rem_nps_running(FALSE)
+      rem_nps_background(FALSE)
+      stop_rem_nps(FALSE)
+      stop_flags_env$stop_rem_nps <- FALSE
+      update_model_debug(
+        rem_nps_debug,
+        status = "error",
+        stage = "Failed",
+        finished_at = Sys.time(),
+        guidance = friendly_model_error("REM", "uploaded NPS data", conditionMessage(e)),
+        raw_error = conditionMessage(e),
+        log_entry = paste("NPS REM background run failed:", conditionMessage(e))
+      )
+      showNotification(
+        paste("REM (NPS) failed:", conditionMessage(e)),
+        type = "error",
+        duration = NULL
+      )
+      invisible(NULL)
+    })
   })
   
   # --- TTE: NPS ---
@@ -3440,8 +3523,9 @@ server <- function(input, output, session) {
   output$rem_nps_text <- renderPrint({
     dbg <- rem_nps_debug()
     if (rem_nps_running()) {
-      cat("⏳ REM model is running...\n")
+      cat("⏳ REM model is running in the background...\n")
       cat("Current stage:", dbg$stage, "\n")
+      cat("This session should stay responsive while the REM job runs.\n")
       cat("Open 'Run status & troubleshooting' below for more detail.\n")
       return(invisible(NULL))
     }

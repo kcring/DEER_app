@@ -768,7 +768,16 @@ ui <- page_fillable(
                       )
                     )
                   ),
-                  tags$span(class = "ref", "Reference: Moeller, A.K. et al. (2018, Ecosphere).")
+                  tags$span(
+                    class = "ref",
+                    "Reference: ",
+                    tags$a(
+                      href = "https://doi.org/10.1002/ecs2.2331",
+                      target = "_blank",
+                      style = "color: var(--rw1); text-decoration: underline;",
+                      "Moeller, A.K. et al. (2018, Ecosphere)"
+                    )
+                  )
                 )
               )
             ),

@@ -54,16 +54,25 @@ install.packages(c(
 - `nimble` requires a working C++ compiler/toolchain for model compilation. See the [NIMBLE installation guide](https://r-nimble.org/download.html).
 - `leaflet` may require additional system libraries on some machines. If mapping packages fail to install, start with the [leaflet for R documentation](https://rstudio.github.io/leaflet/).
 
+### Cloning from GitHub
+
+If you use [Git](https://git-scm.com/), you can copy the project to your computer in one step:
+
+1. Open the repository on GitHub (this project: [github.com/kcring/DEER_app](https://github.com/kcring/DEER_app)).
+2. Click the green **Code** button, choose **HTTPS**, and copy the URL (it looks like `https://github.com/kcring/DEER_app.git`).
+3. In a terminal, go to the folder where you want the project, then run:
+   ```bash
+   git clone https://github.com/kcring/DEER_app.git
+   cd DEER_app
+   ```
+   That creates a folder named after the repository (here, `DEER_app`) with all files. To update later, run `git pull` inside that folder.
+
+If you do not use Git, use **Code → Download ZIP** on GitHub and unzip the archive; then open the unzipped folder in RStudio.
+
 ### Running the App
 
-1. Clone or download this repository:
-   ```bash
-   git clone <repository-url-you-copied-from-github>
-   cd deer_app_v2
-   ```
-   On GitHub, click **Code** and copy the HTTPS repository URL before running `git clone`.
-2. Open `app.R` in RStudio, or from R set the working directory to the project folder.
-3. Click **Run App** or run:
+1. With the project folder as your working directory (see **Cloning from GitHub** above), open `app.R` in RStudio, or from R set the working directory to the project folder.
+2. Click **Run App** or run:
    ```r
    shiny::runApp()
    ```
@@ -71,7 +80,7 @@ install.packages(c(
 From the command line:
 
 ```bash
-Rscript -e "shiny::runApp('/path/to/deer_app_v2')"
+Rscript -e "shiny::runApp('/path/to/DEER_app')"
 ```
 
 ## Usage
@@ -208,9 +217,7 @@ Cross-year winter surveys (for example December to January) are supported; the a
 - **Concurrent users:** A production deployment (e.g. **Shiny Server**, **Posit Connect**, or **shinyapps.io**) runs one R process per app instance; multiple users share that process and can block each other during long MCMC runs. The current app includes a first background-processing prototype for uploaded-data REM runs, but USCR and TTE can still block other users during long jobs. For many simultaneous users, plan **multiple workers** or separate instances and sufficient CPU/RAM.
 - **Tab UX:** The app scrolls to the top when you switch main tabs (`shinyjs`) so long pages do not leave you mid-scroll.
 
-## USGS logo
 
-The UI can show a USGS mark if you add `www/usgs_logo.png`. **Use official marks only with USGS approval** and follow [USGS visual identity guidance](https://www.usgs.gov/about/organization/science-support/visual-identity). If the file is absent, the app shows a short note instead.
 
 ## Troubleshooting
 
@@ -219,11 +226,6 @@ The UI can show a USGS mark if you add `www/usgs_logo.png`. **Use official marks
 - Verify data format matches requirements
 - Ensure camera deployment dates are valid
 - Check that detection distances are provided
-
-**LaTeX equations not rendering:**
-- The app uses MathJax for equation rendering
-- If equations do not appear, try refreshing the page
-- Check browser console for JavaScript errors
 
 **Memory issues:**
 - Reduce `M_uscr` for USCR model
@@ -235,7 +237,7 @@ The UI can show a USGS mark if you add `www/usgs_logo.png`. **Use official marks
 If you use this app in your research, please cite the underlying methods:
 - uSCR: Chandler, R.B. & Royle, J.A. (2013). DOI: [10.1214/12-AOAS610](https://doi.org/10.1214/12-AOAS610)
 - REM: Rowcliffe, J.M. et al. (2008). DOI: [10.1111/j.1365-2664.2008.01473.x](https://doi.org/10.1111/j.1365-2664.2008.01473.x)
-- TTE: [Moeller et al. 2018]
+- TTE: Moeller, A.K. et al. (2018). *Ecosphere* 9(6):e02331. DOI: [10.1002/ecs2.2331](https://doi.org/10.1002/ecs2.2331) ([journal page](https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecs2.2331))
 
 ## License
 

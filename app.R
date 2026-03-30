@@ -118,51 +118,79 @@ summarize_method <- function(fit) {
 }
 
 build_combo_table_from_fits <- function(fits) {
+  model_order <- c("REM", "TTE", "USCR")
+  fits <- fits[model_order[model_order %in% names(fits)]]
+  fits <- fits[!vapply(fits, is.null, logical(1))]
+  if (!length(fits)) return(NULL)
+
+  model_names <- names(fits)
   waic_tbl <- tibble::tibble(
-    model = c("REM", "TTE", "USCR"),
-    waic  = c(
-      get_waic_value(fits$REM),
-      get_waic_value(fits$TTE),
-      get_waic_value(fits$USCR)
+    model = model_names,
+    waic = vapply(fits, get_waic_value, numeric(1))
+  )
+
+  if (length(model_names) == 1L) {
+    waic_tbl <- waic_tbl %>%
+      dplyr::mutate(deltaWAIC = 0, rel_lik = 1, w = 1)
+  } else if (any(!is.finite(waic_tbl$waic))) {
+    waic_tbl <- waic_tbl %>%
+      dplyr::mutate(
+        deltaWAIC = NA_real_,
+        rel_lik = NA_real_,
+        w = 1 / length(model_names)
+      )
+  } else {
+    waic_tbl <- waic_tbl %>%
+      dplyr::mutate(
+        deltaWAIC = waic - min(waic),
+        rel_lik = exp(-0.5 * deltaWAIC),
+        w = rel_lik / sum(rel_lik)
+      )
+  }
+
+  density_draws <- lapply(fits, function(fit) {
+    x <- as.numeric(fit$samples_all[, "D_mi2"])
+    sort(x[is.finite(x)])
+  })
+  n_draws <- min(lengths(density_draws))
+  if (!is.finite(n_draws) || n_draws < 1L) return(NULL)
+
+  mat <- do.call(
+    cbind,
+    lapply(density_draws, function(x) x[seq_len(n_draws)])
+  )
+  colnames(mat) <- model_names
+
+  density_est <- mat
+  summary_rows <- character()
+  if (ncol(mat) > 1L) {
+    density_est <- cbind(
+      mat,
+      `unweighted mean` = rowMeans(mat),
+      `weighted mean` = as.numeric(mat %*% waic_tbl$w)
     )
-  ) %>%
-    dplyr::mutate(
-      deltaWAIC = waic - min(waic),
-      rel_lik   = exp(-0.5 * deltaWAIC),
-      w         = rel_lik / sum(rel_lik)
-    ) %>%
-    dplyr::arrange(model)  # REM, TTE, USCR
-  
-  rem_D  <- fits$REM$samples_all[,  "D_mi2"]
-  tte_D  <- fits$TTE$samples_all[,  "D_mi2"]
-  uscr_D <- fits$USCR$samples_all[, "D_mi2"]
-  
-  mat <- cbind(sort(rem_D), sort(tte_D), sort(uscr_D))
-  colnames(mat) <- c("REM", "TTE", "USCR")
-  
-  unweighted_mean <- rowMeans(mat)
-  weighted_mean   <- as.numeric(mat %*% waic_tbl$w)
-  
-  density_est <- cbind(mat,
-                       unweighted_mean = unweighted_mean,
-                       weighted_mean   = weighted_mean)
-  
+    summary_rows <- c("unweighted mean", "weighted mean")
+  }
+
   means <- apply(density_est, 2, mean)
   lower <- apply(density_est, 2, stats::quantile, probs = 0.025)
   upper <- apply(density_est, 2, stats::quantile, probs = 0.975)
   prob20 <- apply(density_est, 2, function(x) mean(x > 20))
-  
+
   table_out <- tibble::tibble(
-    Method                    = c("REM", "TTE", "USCR",
-                                  "unweighted mean", "weighted mean"),
+    Method = c(model_names, summary_rows),
     `Mean density (deer/mi²)` = as.numeric(means),
-    `Lower 2.5%`              = as.numeric(lower),
-    `Upper 97.5%`             = as.numeric(upper),
-    `Prob > 20 DPSM`          = as.numeric(prob20),
-    `WAIC weight`             = c(waic_tbl$w, NA, NA)
+    `Lower 2.5%` = as.numeric(lower),
+    `Upper 97.5%` = as.numeric(upper),
+    `Prob > 20 DPSM` = as.numeric(prob20),
+    `WAIC weight` = c(waic_tbl$w, rep(NA_real_, length(summary_rows)))
   )
-  
-  list(table = table_out, waic = waic_tbl)
+
+  list(
+    table = table_out,
+    waic = waic_tbl,
+    models_available = model_names
+  )
 }
 
 #' Simulated data: only USCR is fit — single-model summary table (no WAIC averaging)
@@ -515,7 +543,7 @@ ui <- page_fillable(
                   tags$h3("Rigorous"),
                   tags$ul(
                     tags$li("Reports deer density with uncertainty, including credible intervals."),
-                    tags$li("Uses three model types and a WAIC-weighted model-averaged estimate for uploaded NPS data."),
+                    tags$li("Uses three model types and a WAIC-weighted model-averaged estimate for uploaded field data."),
                     tags$li("Brings together spatial and encounter-rate approaches in one transparent workflow.")
                   )
                 )
@@ -571,15 +599,15 @@ ui <- page_fillable(
                     tags$li(tags$strong("Images CSV"), " — detection records such as timestamps, species, and ", tags$strong("Cluster ID"), " values. In this workflow, ", tags$strong("Cluster ID"), " means the unique identifier for an independent encounter event.")
                   ),
                   tags$p(
-                    "The current upload pipeline expects ", tags$strong("NPS-style CSV column names"), ". Recommended camera spacing and camera counts come from the protocol, but the app analyzes the data you provide rather than requiring one exact array design or minimum camera count to function."
+                    "The current upload pipeline expects the ", tags$strong("TrapTagger / current park-workflow column names"), " described in the Add your data tab. Recommended camera spacing and camera counts come from the protocol, but the app analyzes the data you provide rather than requiring one exact array design or minimum camera count to function."
                   ),
                   tags$p(
                     "Click the ", tags$strong("'Add your data'"), " tab for column requirements and examples. The app will automatically:"
                   ),
                   tags$ul(
-                    tags$li("Pre-clean column names and whitespace"),
-                    tags$li("Run quality checks on your data"),
-                    tags$li("Currently trim images to the first 56 days per camera to match the park workflow")
+                    tags$li("Standardize column names, whitespace, and common logical values such as Yes/No or TRUE/FALSE"),
+                    tags$li("Run quality checks on the deployment and images files"),
+                    tags$li("Optionally trim each camera to the first 56 deployed days to match the current park workflow")
                   )
                 ),
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 1rem;", "Step 2: Adjust settings (optional)"),
@@ -615,9 +643,9 @@ ui <- page_fillable(
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 0.5rem;", "Step 4: Compare results"),
                 tags$p("Use the ", tags$strong("'Compare & combine'"), " tab to:"),
                 tags$ul(
-                  tags$li("For ", tags$strong("NPS data"), ": compute a WAIC-weighted combined estimate across all three models and export posterior summaries as CSV files."),
+                  tags$li("For ", tags$strong("uploaded field data"), ": compare whichever model fits have finished so far, and compute WAIC-weighted summaries once multiple models are available."),
                   tags$li("For ", tags$strong("simulated data"), ": review the uSCR simulated density summary."),
-                  tags$li("Compare model performance using WAIC values for uploaded NPS data."),
+                  tags$li("Compare model performance using WAIC values for uploaded field data."),
                   tags$li("Download posterior summaries with parameter names, means, and 95% credible intervals.")
                 ),
                 tags$p(
@@ -824,10 +852,10 @@ ui <- page_fillable(
         nav_panel(
           "Simulate data",
           markdown(paste(
-            "Simulate a camera grid with **secr**; run **USCR on simulated data** from the USCR tab.",
-            "REM and TTE are run from their tabs using **uploaded NPS data** only.",
+            "Simulate a toy camera grid under **SECR** (*spatially explicit capture–recapture*) and run **USCR on simulated data** from the USCR tab.",
+            "REM and TTE also have separate **teaching simulators** below that generate model-specific count data from those formulas.",
             "",
-            "Adjust the simulation parameters below, then click 'Simulate grid' to generate data.",
+            "Adjust the simulation parameters below, then choose the model tab you want to test.",
             sep = "\n"
           )),
           
@@ -887,11 +915,11 @@ ui <- page_fillable(
               ),
               tags$p(
                 tags$strong("Home-range scale sigma"),
-                " controls how quickly detection probability falls off with distance from an animal's activity center. Larger values spread detections across more cameras."
+                " is the spatial scale parameter passed into the uSCR detection function. Larger values spread detections across more cameras and correspond to broader space use."
               ),
               tags$p(
                 tags$strong("Baseline detection rate lambda0"),
-                " controls how detectable animals are when they pass close to a camera. Larger values produce more detections."
+                " is the expected number of detections per occasion if a deer's activity center were at the camera. Larger values produce more detections everywhere in the array."
               ),
               tags$p(
                 tags$strong("Random seed"),
@@ -899,7 +927,7 @@ ui <- page_fillable(
               ),
               tags$p(
                 tags$strong("Detection radius r"),
-                " is the effective distance from the camera used in the simulated viewshed geometry."
+                " is not used to generate the SECR detections themselves. It is carried into the model-input table and used by the REM/TTE teaching simulators and related plots."
               )
             )
           ),
@@ -994,18 +1022,19 @@ ui <- page_fillable(
         nav_panel(
           "Add your data",
           markdown(paste(
-            "Upload your **deployment** and **images** CSVs in NPS SOP format.",
+            "Upload a **deployment CSV** (where and when cameras were set and recording) and an **images CSV** (timestamps, species, counts, and Cluster IDs).",
+            "The current upload checker expects the TrapTagger / current park-workflow column names listed below.",
             "",
             sep = "\n"
           )),
           h3("The app will:"),
           markdown(paste(
-            "1. Pre-clean column names and whitespace;",
-            "2. Run `check_deployments()` and `check_images()` (deployments are re-checked when images upload so malfunction-date rules can use site overlap);",
+            "1. Standardize column names, whitespace, and common logical values;",
+            "2. Check required columns, data types, matching site names, and deployment/image consistency;",
             "3. Flag image timestamps outside each camera's deployment window (±3 days);",
-            "4. Trim images to the first 56 days per camera using `trim_images_56days()`.",
+            "4. Optionally trim each camera to the first 56 deployed days to match the current park workflow.",
             "",
-            "Download cleaned/trimmed CSVs if needed, then configure MCMC and priors in the **Model settings** tab and run models in the USCR/REM/TTE tabs.",
+            "Download processed CSVs if needed, then configure MCMC and priors in the **Model settings** tab and run models in the USCR/REM/TTE tabs.",
             "",
             "---",
             "",
@@ -1047,7 +1076,7 @@ ui <- page_fillable(
           )),
           
           h3("Step 1: Deployment file"),
-          fileInput("deployment_csv", "Upload deployment CSV (NPS format)", accept = ".csv"),
+          fileInput("deployment_csv", "Upload deployment CSV", accept = ".csv"),
           h4("Deployment check log"),
           verbatimTextOutput("deployment_check_log"),
           h4("Preview of cleaned deployment data"),
@@ -1057,12 +1086,17 @@ ui <- page_fillable(
           hr(),
           
           h3("Step 2: Images file"),
-          fileInput("images_csv", "Upload images CSV (NPS format)", accept = ".csv"),
+          fileInput("images_csv", "Upload images CSV", accept = ".csv"),
+          checkboxInput(
+            "apply_56day_trim",
+            "After validation, trim each camera to the first 56 deployed days (recommended for the current park workflow)",
+            value = TRUE
+          ),
           h4("Images check log"),
           verbatimTextOutput("images_check_log"),
-          h4("Preview of cleaned + trimmed images data"),
+          h4("Preview of processed images data"),
           DTOutput("images_preview"),
-          downloadButton("download_images_checked", "Download cleaned images CSV"),
+          downloadButton("download_images_checked", "Download processed images CSV"),
           
           hr(),
           
@@ -1086,7 +1120,7 @@ ui <- page_fillable(
             "- **Number of chains**: 1 by default for speed; use more chains when you want stronger convergence diagnostics",
             "- **Convergence criteria**: R̂ < 1.1 for all monitored parameters when multiple chains are used",
             "",
-            "USCR now does a short adaptive tuning phase before the final run. If convergence is poor or psi pushes high, increase iterations and/or M and rerun.",
+            "USCR now does a short adaptive tuning phase before the final run. If convergence is poor, doubling iterations is usually more helpful than increasing thinning alone. If the posterior `psi` stays high or posterior `N` approaches `M`, increase `M` and rerun.",
             "",
             "### Meta-analysis and pooled priors (not implemented in-app)",
             "",
@@ -1096,7 +1130,7 @@ ui <- page_fillable(
             "",
             "### Camera geometry (NPS and models)",
             "",
-            "Default detection half-angle is 55° (Browning-style). Adjust under **Advanced** if you use a different camera or field measurements.",
+            "Default detection angle is 55° (Browning-style). Adjust under **Advanced** if you use a different camera or field measurements; the app converts units internally where needed.",
             "",
             sep = "\n"
           )),
@@ -1164,9 +1198,9 @@ ui <- page_fillable(
               
               markdown(paste(
                 "**Note on M (data augmentation)**: The app starts lower for speed. If posterior N approaches M,",
-                "or if psi concentrates near 1, increase M and rerun.",
+                "or if posterior psi concentrates near 1, increase M and rerun.",
                 "",
-                "**Note on USCR iterations**: If convergence warnings appear, increase iterations by iter × 2.",
+                "**Note on USCR iterations**: If convergence warnings appear, try doubling iterations before changing thinning.",
                 "The app now does a short adaptive tuning phase before the final run.",
                 sep = "\n"
               )),
@@ -1175,16 +1209,16 @@ ui <- page_fillable(
               
               h4("Priors: REM & TTE"),
               markdown(paste(
-                "**Informative priors** for animal movement speed and camera-level noise:",
+                "**Movement speed is the main informative prior here; the density and heterogeneity bounds are mainly safeguards:**",
                 "",
-                "- **D** ~ Uniform(0, D_max): Population density prior. Increase D_max if extremely high densities expected.",
-                "- **log(v)** ~ Normal(mean, SD): Animal movement speed (log scale). Mean ≈ 3.99 km/day.",
-                "  Increase SD to weaken constraint or change mean to reflect regionally-specific deer movement estimates.",
-                "- **sd_eps** ~ Uniform(0, max): Random overdispersion among cameras. Adjust upper bound based on variability.",
+                "- **D** ~ Uniform(0, D_max): Upper bound on density, not meant to be strongly informative. If the posterior presses against `D_max`, increase it.",
+                "- **log(v)** ~ Normal(mean, SD): Informative prior on deer movement speed (log scale). Default values came from the deer movement literature and NPS guidance.",
+                "- **sd_eps** ~ Uniform(0, max): Upper bound on camera-to-camera heterogeneity. If the posterior presses against the maximum, increase the bound.",
                 "",
                 "**Example modifications**:",
                 "- Wider uncertainty in movement speed: log_v ~ Normal(1.339, 0.40)",
                 "- Allowing higher densities: D ~ Uniform(0, 400)",
+                "- Allowing more camera heterogeneity: sd_eps ~ Uniform(0, 20)",
                 "",
                 sep = "\n"
               )),
@@ -1208,20 +1242,19 @@ ui <- page_fillable(
               
               h4("Priors: USCR"),
               markdown(paste(
-                "**Informative priors** for spatial scale and detection intensity:",
+                "**USCR uses a biologically informative prior on space use plus weaker priors on other terms:**",
                 "",
-                "- **log(σ)** ~ Normal(mean, SD): Spatial scale parameter (home range) on log scale.",
-                "  Based on average home range size of 1.1 km². Increase SD to weaken constraint if poor mixing,",
-                "  or modify mean based on regionally-specific home range size estimates.",
-                "- **log(λ₀)** ~ Normal(0, SD): Baseline detection intensity. Increase SD for weaker prior.",
-                "- **psi** ~ Uniform(0, 1): Proportion of augmented individuals actually present. Do not modify.",
-                "- **sd_eps** ~ Gamma(shape, rate): Camera-level random effect. Adjust shape to reduce prior influence.",
+                "- **log(σ)** ~ Normal(mean, SD): Informative prior on the space-use scale. The default mean corresponds to about `σ = 0.24 km`, which is consistent with a circular 95% home-range area near `1.1 km²`.",
+                "- **log(λ₀)** ~ Normal(0, SD): Baseline detection intensity. Because `exp(0) = 1`, the default prior is centered near one expected detection per deployed day if a deer's activity center were at the camera.",
+                "- **psi** ~ Uniform(0, 1): Data-augmentation inclusion probability. This is usually left alone in the app.",
+                "- **sd_eps** ~ Gamma(shape, rate): Camera-level random effect. The app exposes both shape and rate; change these only if you have a specific prior in mind.",
                 "",
                 "**Example modifications**:",
                 "- Looser movement range prior: log_sigma ~ Normal(-1.4442, 0.30)",
                 "- Higher uncertainty in baseline detection: log_lam_0 ~ Normal(0, 2)",
+                "- Lighter penalty on large camera effects: sd_eps ~ Gamma(1, 0.5)",
                 "",
-                "⚠️ **Model performance warning**: If psi peaks near 1 or N approaches M, increase M or increase iterations.",
+                "⚠️ **Model performance warning**: If the posterior `psi` peaks near 1 or posterior `N` approaches `M`, increase `M` and/or run longer chains.",
                 "",
                 sep = "\n"
               )),
@@ -1237,6 +1270,8 @@ ui <- page_fillable(
                 ),
                 column(6,
                   numericInput("sd_eps_shape", "sd_eps gamma shape",
+                               value = 1, min = 0.1, step = 0.1),
+                  numericInput("sd_eps_rate", "sd_eps gamma rate",
                                value = 1, min = 0.1, step = 0.1)
                 )
               )
@@ -1263,23 +1298,10 @@ ui <- page_fillable(
               numericInput("log_sigma_mean", NULL, value = -1.4442),
               numericInput("log_sigma_sd", NULL, value = 0.1451),
               numericInput("log_lam0_sd", NULL, value = 1),
-              numericInput("sd_eps_shape", NULL, value = 1)
+              numericInput("sd_eps_shape", NULL, value = 1),
+              numericInput("sd_eps_rate", NULL, value = 1)
             )
           )
-        ),
-        
-        nav_panel(
-          "Shapefile (planned)",
-          markdown(paste(
-            "The app currently expects **deployment and images CSVs** in NPS SOP format.",
-            "",
-            "**Future work:** optional upload of a **park boundary or habitat shapefile** (e.g. GeoPackage, zipped shapefile)",
-            "to clip cameras, define the state-space polygon for uSCR, or validate that coordinates fall inside the study area.",
-            "That pipeline is **not implemented** yet—use GIS software to QC coordinates before upload.",
-            "",
-            "If you add support later, prefer reading with `sf::st_read()` and the same CRS as deployment lat/long.",
-            sep = "\n"
-          ))
         ),
         
         # ---------------------- DATA SUMMARY --------------------------
@@ -1315,29 +1337,32 @@ ui <- page_fillable(
             <details>
               <summary style="cursor: pointer; font-weight: 600; margin: 1rem 0; padding: 0.5rem; background: #f0f4e8; border-left: 3px solid #609048; border-radius: 6px;"><strong>Under the hood (equations)</strong></summary>
               <div style="margin: 1rem 0; padding-left: 1rem;">
-                <p>Observation model per camera \\(j\\) and occasion/day \\(t\\):</p>
-                <p>$$Y_{jt} \\sim \\mathrm{Poisson}(\\lambda_{jt})$$</p>
-                <p>Encounter rate with distance decay and camera heterogeneity:</p>
-                <p>$$\\lambda_{jt} = \\mathrm{effort}_{jt}\\;\\lambda_0 \\sum_{i=1}^{M} z_i \\exp\\!\\Big(-\\frac{d_{ij}^2}{2\\sigma^2}\\Big)\\; \\exp(\\epsilon_j)$$</p>
-                <p>Density is \\(N\\) divided by the study area in mi²: with real coordinates, area comes from the union of buffers around cameras (as in the analysis Rmd); simulated UTM‑only grids use the rectangular state space. Activity centers are constrained so each lies within the buffer distance of at least one camera. The app reports \\(D_{\\mathrm{mi}^2}\\).</p>
+                <p>Per-camera observation model:</p>
+                <p>$$y_j \\sim \\mathrm{Poisson}(\\mu_j), \\qquad \\log \\mu_j = \\log(\\mathrm{days}_j) + \\log(\\Lambda_j) + \\epsilon_j$$</p>
+                <p>Expected encounter rate from augmented individuals:</p>
+                <p>$$\\Lambda_j = \\sum_{i=1}^{M} z_i\\,\\lambda_0\\,\\exp\\!\\Big(-\\frac{d_{ij}^2}{2\\sigma^2}\\Big), \\qquad z_i \\sim \\mathrm{Bernoulli}(\\psi)$$</p>
+                <p>Activity centers \\(s_i\\) are uniform over the buffered state-space, with a constraint that each center remains within the allowed buffer distance of at least one camera. Camera effects follow \\(\\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)\\).</p>
+                <p>Density is obtained from \\(N = \\sum_i z_i\\) divided by the study-area size in mi². With real coordinates, area comes from the buffered camera state-space; on the toy simulator, area comes from the rectangular simulated state-space. The app reports \\(D_{\\mathrm{mi}^2}\\).</p>
                 <h3>Variables</h3>
                 <ul>
-                  <li>\\(Y_{jt}\\) — count of independent deer events at camera \\(j\\) on day \\(t\\) (from <code>Cluster ID</code>).</li>
-                  <li>\\(\\lambda_{jt}\\) — expected event rate for \\(j,t\\).</li>
-                  <li>\\(\\mathrm{effort}_{jt}\\) — effort indicator (1 for deployed days from <code>Start/End</code>).</li>
-                  <li>\\(\\lambda_0\\) — baseline encounter rate at ~0 m (internal).</li>
-                  <li>\\(\\sigma\\) — space‑use scale (m), controls decay with distance (internal).</li>
-                  <li>\\(d_{ij}\\) — distance (m; projected) from animal \\(i\\)\'s activity center to camera \\(j\\).</li>
-                  <li>\\(z_i\\) — augmentation indicator (1 if individual \\(i\\) is real; internal).</li>
-                  <li>\\(\\epsilon_j\\) — camera random effect (mean 0; internal).</li>
+                  <li>\\(y_j\\) — total independent deer detections at camera \\(j\\) across the deployment, built from unique <code>Cluster ID</code> values.</li>
+                  <li>\\(\\mathrm{days}_j\\) — number of deployed days for camera \\(j\\).</li>
+                  <li>\\(\\mu_j\\) — expected number of deer detections at camera \\(j\\) during the deployment.</li>
+                  <li>\\(\\lambda_0\\) — baseline expected detections per deployed day if an animal\'s activity center were at the camera.</li>
+                  <li>\\(\\sigma\\) — spatial scale parameter (km), related to home-range size and how quickly detection falls with distance.</li>
+                  <li>\\(d_{ij}\\) — projected distance (km) from augmented individual \\(i\\)\'s activity center to camera \\(j\\).</li>
+                  <li>\\(M\\) — augmented population size used to estimate density.</li>
+                  <li>\\(z_i\\) — indicator that augmented individual \\(i\\) is part of the real population.</li>
+                  <li>\\(\\epsilon_j\\) — camera-level random effect, with \\(\\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)\\).</li>
+                  <li>\\(N = \\sum_i z_i\\) — estimated abundance inside the state-space.</li>
                   <li>\\(D_{\\mathrm{mi}^2}\\) — density, deer per square mile (reported).</li>
                 </ul>
                 <h3>Priors used in the app</h3>
                 <ul>
-                  <li>\\(\\log \\sigma \\sim \\mathcal{N}(-1.4442,\\,0.1451)\\) (anchors HR95 ≈ 1.1 km² ⇒ σ ≈ 236 m).</li>
-                  <li>\\(\\log \\lambda_0 \\sim \\mathcal{N}(0,\\,1)\\) (weak baseline).</li>
-                  <li>\\(\\psi \\sim \\mathcal{U}(0,1)\\) (augmentation inclusion).</li>
-                  <li>\\(\\mathrm{sd}_\\epsilon \\sim \\mathrm{Gamma}(1,1)\\) (camera heterogeneity).</li>
+                  <li>\\(\\log \\sigma \\sim \\mathcal{N}(-1.4442,\\,0.1451)\\), which anchors \\(\\sigma\\) near 0.24 km.</li>
+                  <li>\\(\\log \\lambda_0 \\sim \\mathcal{N}(0,\\,1)\\), centered near one expected detection per day at distance 0.</li>
+                  <li>\\(\\psi \\sim \\mathcal{U}(0,1)\\) for data augmentation.</li>
+                  <li>\\(sd_\\epsilon \\sim \\mathrm{Gamma}(\\text{shape},\\text{rate})\\), with the default app values set to 1 and 1.</li>
                 </ul>
               </div>
             </details>
@@ -1413,24 +1438,27 @@ ui <- page_fillable(
             <details>
               <summary style="cursor: pointer; font-weight: 600; margin: 1rem 0; padding: 0.5rem; background: #f0f4e8; border-left: 3px solid #609048; border-radius: 6px;"><strong>Under the hood (equations)</strong></summary>
               <div style="margin: 1rem 0; padding-left: 1rem;">
-                <p>Closed‑form estimator:</p>
-                <p>$$D_{\\mathrm{km}^2} = \\frac{(y/t)}{\\,v \\; r_{\\mathrm{km}} \\; \\frac{(2+\\theta_{\\mathrm{rad}})}{\\pi}} \\qquad\\Rightarrow\\qquad D_{\\mathrm{mi}^2} = 2.59\\,D_{\\mathrm{km}^2}$$</p>
+                <p>Per-camera Poisson model:</p>
+                <p>$$y_j \\sim \\mathrm{Poisson}(\\lambda_j)$$</p>
+                <p>$$\\log \\lambda_j = \\log D + \\log(\\mathrm{camera\\_days}_j) + \\log v + \\log r_j + \\log\\!\\Big(\\frac{2 + \\theta_{\\mathrm{rad}}}{\\pi}\\Big) + \\epsilon_j$$</p>
+                <p>The app takes the user-entered camera angle in degrees and converts it internally to \\(\\theta_{\\mathrm{rad}} = \\theta_{\\mathrm{deg}}\\pi/180\\). Camera effects follow \\(\\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)\\), and the reported density is \\(D_{\\mathrm{mi}^2} = 2.59\\,D_{\\mathrm{km}^2}\\).</p>
                 <h3>Variables</h3>
                 <ul>
-                  <li>\\(y\\) — number of independent deer events per camera (unique <code>Cluster ID</code>).</li>
-                  <li>\\(t\\) — camera‑days of effort from <code>Start/End</code>.</li>
-                  <li>\\(v\\) — movement speed (km/day), prior on \\(\\log v\\) as below.</li>
-                  <li>\\(r_{\\mathrm{km}}\\) — effective detection radius in km; \\(r_{\\mathrm{km}} = r_m/1000\\).</li>
-                  <li>\\(r_m\\) — effective detection radius (meters), from <code>Detection Distance</code>.</li>
-                  <li>\\(\\theta_{\\mathrm{rad}}\\) — camera half‑angle in radians (default \\(55^\\circ\\)).</li>
+                  <li>\\(y_j\\) — number of independent deer detection events at camera \\(j\\) (unique <code>Cluster ID</code>).</li>
+                  <li>\\(\\mathrm{camera\\_days}_j\\) — deployed days for camera \\(j\\).</li>
+                  <li>\\(D\\) — deer density in deer/km² before converting to deer/mi² for display.</li>
+                  <li>\\(v\\) — deer movement speed (km/day).</li>
+                  <li>\\(r_j\\) — effective detection radius in km; the app converts meters from <code>Detection Distance</code> to km.</li>
+                  <li>\\(\\theta_{\\mathrm{deg}}\\) — full detection angle supplied by the user (default \\(55^\\circ\\)); converted internally to radians.</li>
+                  <li>\\(\\epsilon_j\\) — camera-level random effect, with \\(\\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)\\).</li>
                   <li>\\(D_{\\mathrm{km}^2}, D_{\\mathrm{mi}^2}\\) — density in deer/km² and deer/mi² (reported in mi²).</li>
                 </ul>
                 <h3>Priors/inputs used in the app</h3>
                 <ul>
-                  <li>\\(\\log v \\sim \\mathcal{N}(1.339,\\,0.2955)\\) (median ≈ 3.8–4.0 km/day; literature).</li>
-                  <li>\\(\\theta = 55^\\circ\\) by default (can be changed if measured).</li>
-                  <li>\\(r_m\\) from field <code>Detection Distance</code> (m).</li>
-                  <li>\\(\\mathrm{sd}_\\epsilon \\sim \\mathcal{U}(0,10)\\) (optional camera heterogeneity).</li>
+                  <li>\\(D \\sim \\mathcal{U}(0, D_{\\max})\\), which acts as an upper bound rather than a strongly informative prior.</li>
+                  <li>\\(\\log v \\sim \\mathcal{N}(1.339,\\,0.2955)\\), an informative deer movement prior.</li>
+                  <li>\\(\\theta_{\\mathrm{deg}} = 55^\\circ\\) by default, and cameras are assumed to be randomly placed and unbaited.</li>
+                  <li>\\(sd_\\epsilon \\sim \\mathcal{U}(0, 10)\\), an upper bound on camera heterogeneity.</li>
                 </ul>
               </div>
             </details>
@@ -1510,34 +1538,35 @@ ui <- page_fillable(
           tags$div(
             id = "tte-content",
             HTML('
-            <h2>Model 3 — TTE (Time‑to‑Event, periodized)</h2>
-            <p><strong>The gist:</strong> Uses <strong>total deer detection events per camera</strong>, scaled by <strong>movement‑based time‑units</strong> and the <strong>viewshed area</strong>. More deer events per time on → higher density.</p>
+            <h2>Model 3 — TTE (Time‑to‑Event)</h2>
+            <p><strong>The gist:</strong> Uses <strong>deer detection events per camera</strong>, scaled by <strong>movement-based time units</strong> and the <strong>viewshed area</strong>. Shorter effective time between encounters implies higher density.</p>
             <details>
               <summary style="cursor: pointer; font-weight: 600; margin: 1rem 0; padding: 0.5rem; background: #f0f4e8; border-left: 3px solid #609048; border-radius: 6px;"><strong>Under the hood (equations)</strong></summary>
               <div style="margin: 1rem 0; padding-left: 1rem;">
-                <p>Periodized Poisson per camera \\(j\\):</p>
+                <p>Per-camera Poisson model:</p>
                 <p>$$y_j \\sim \\mathrm{Poisson}(\\lambda_j), \\qquad \\log \\lambda_j \\;=\\; \\log D \\;+\\; \\log(\\mathrm{tte\\_units}_j)\\;+\\;\\log(A_j)\\;+\\;\\epsilon_j$$</p>
                 <p>Movement‑based time‑units and viewshed area:</p>
-                <p>$$\\mathrm{tte\\_units}_j \\;=\\; \\frac{\\mathrm{camera\\_days}_j}{\\mathrm{time\\_unit}}, \\qquad \\mathrm{time\\_unit} \\;\\approx\\; \\frac{0.59\\, r_m}{v}$$</p>
-                <p>$$A_j \\;=\\; \\frac{\\theta_{\\mathrm{rad}}}{2} \\; r_m^2 \\quad (\\mathrm{m}^2) \\qquad\\Rightarrow\\qquad A_j\\;(\\mathrm{km}^2) = \\frac{A_j\\;(\\mathrm{m}^2)}{10^6}$$</p>
-                <p>Report \\(D_{\\mathrm{mi}^2} = 2.59\\,D_{\\mathrm{km}^2}\\).</p>
+                <p>$$\\mathrm{tte\\_units}_j \\;=\\; \\frac{\\mathrm{camera\\_days}_j}{\\mathrm{time\\_unit}}, \\qquad \\mathrm{time\\_unit} \\;\\approx\\; \\frac{0.59\\, r_j}{v}$$</p>
+                <p>$$A_j \\;=\\; \\pi r_j^2 \\frac{\\theta_{\\mathrm{deg}}}{360}, \\qquad \\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)$$</p>
+                <p>Here \\(r_j\\) is in km and \\(\\theta_{\\mathrm{deg}}\\) is the user-entered detection angle in degrees. The app reports \\(D_{\\mathrm{mi}^2} = 2.59\\,D_{\\mathrm{km}^2}\\).</p>
                 <h3>Variables</h3>
                 <ul>
-                  <li>\\(y_j\\) — number of <strong>deer detection events</strong> for camera \\(j\\) in the current app workflow.</li>
+                  <li>\\(y_j\\) — number of deer detection events for camera \\(j\\) in the current app workflow.</li>
                   <li>\\(\\mathrm{camera\\_days}_j\\) — total deployed days for camera \\(j\\) from <code>Start/End</code>.</li>
-                  <li>\\(\\mathrm{time\\_unit}\\) — expected time to traverse the viewshed once; \\(\\approx 0.59\\,r_m/v\\) (days).</li>
+                  <li>\\(\\mathrm{time\\_unit}\\) — expected time to traverse the viewshed once; \\(\\approx 0.59\\,r_j/v\\) (days).</li>
                   <li>\\(v\\) — movement speed (km/day); prior on \\(\\log v\\) as below.</li>
-                  <li>\\(r_m\\) — effective detection radius (m) from <code>Detection Distance</code>.</li>
-                  <li>\\(\\theta_{\\mathrm{rad}}\\) — camera half‑angle in radians (default \\(55^\\circ\\)).</li>
+                  <li>\\(r_j\\) — effective detection radius (km), converted from meters in <code>Detection Distance</code>.</li>
+                  <li>\\(\\theta_{\\mathrm{deg}}\\) — full detection angle supplied by the user (default \\(55^\\circ\\)).</li>
                   <li>\\(A_j\\) — viewshed area for camera \\(j\\) (km²).</li>
-                  <li>\\(\\epsilon_j\\) — camera random effect (mean 0; optional).</li>
+                  <li>\\(\\epsilon_j\\) — camera-level random effect, with \\(\\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)\\).</li>
                   <li>\\(D_{\\mathrm{mi}^2}\\) — density (deer/mi²), reported.</li>
                 </ul>
                 <h3>Priors/inputs used in the app</h3>
                 <ul>
-                  <li>\\(\\log v \\sim \\mathcal{N}(1.339,\\,0.2955)\\) (used to define the time‑unit; calibrates the clock).</li>
-                  <li>\\(\\theta = 55^\\circ\\) by default; \\(r_m\\) from <code>Detection Distance</code>.</li>
-                  <li>\\(\\mathrm{sd}_\\epsilon \\sim \\mathcal{U}(0,10)\\) (optional camera heterogeneity).</li>
+                  <li>\\(D \\sim \\mathcal{U}(0, D_{\\max})\\), which acts as an upper bound rather than a strongly informative prior.</li>
+                  <li>\\(\\log v \\sim \\mathcal{N}(1.339,\\,0.2955)\\), which calibrates the movement-based time unit.</li>
+                  <li>\\(\\theta_{\\mathrm{deg}} = 55^\\circ\\) by default, with \\(r_j\\) taken from field-measured <code>Detection Distance</code>.</li>
+                  <li>\\(sd_\\epsilon \\sim \\mathcal{U}(0, 10)\\), an upper bound on camera heterogeneity.</li>
                 </ul>
               </div>
             </details>
@@ -1611,11 +1640,11 @@ ui <- page_fillable(
         nav_panel(
           "Compare & combine",
           markdown(paste(
-            "**NPS data:** WAIC-based model averaging across REM, TTE, and USCR.",
+            "**Uploaded field data:** the table updates as REM, TTE, and USCR finish. If only some models have completed, the table will still summarize the completed fits.",
             "",
-            "1. Compute ΔWAIC and WAIC weights;",
-            "2. Combine posterior draws of `D_mi²` (deer per square mile);",
-            "3. Report unweighted and WAIC-weighted mean densities, 95% CIs, and P(D > 20 DPSM).",
+            "1. Compute ΔWAIC and WAIC weights when multiple models are available;",
+            "2. Combine posterior draws of `D_mi²` (deer per square mile) across the completed fits;",
+            "3. Report model-specific densities, and when possible also report unweighted and WAIC-weighted summaries plus P(D > 20 DPSM).",
             "",
             "**Simulated data:** the table below remains the **USCR spatial simulator** summary only (not a three‑model average).",
             "Standalone REM/TTE teaching-simulator runs are shown in their model tabs and are intentionally excluded here.",
@@ -1631,10 +1660,10 @@ ui <- page_fillable(
           downloadButton("dl_sim_uscr_csv", "Download simulated USCR posterior summary (CSV)"),
           
           hr(),
-          h4("NPS data – WAIC-weighted results (deer/mi²)"),
+          h4("Uploaded field data – model comparison and combined results (deer/mi²)"),
           DTOutput("nps_combo_table"),
-          p("Posterior summaries (all monitored parameters, mean, 95% CI) for each model:"),
-          downloadButton("dl_nps_all_csv", "Download NPS posterior summaries — REM, TTE, USCR (CSV)")
+          p("Posterior summaries (all monitored parameters, mean, 95% CI) for each completed model:"),
+          downloadButton("dl_nps_all_csv", "Download available uploaded-data posterior summaries (CSV)")
         )
   )
 )
@@ -2048,28 +2077,38 @@ server <- function(input, output, session) {
     
     if (is.null(res)) return(NULL)
     
-    # Trim to 56 days
-    trim_msgs <- character()
-    
-    trimmed <- withCallingHandlers(
-      {
-        trim_images_56days(res)
-      },
-      message = function(m) {
-        trim_msgs <<- c(trim_msgs, m$message)
-        invokeRestart("muffleMessage")
-      },
-      warning = function(w) {
-        warns <<- c(warns, w$message)
-        invokeRestart("muffleWarning")
-      }
-    )
-    
-    images_checked(trimmed)
-    images_issues(list(
-      messages = c(msgs, trim_msgs),
-      warnings = warns
-    ))
+    if (isTRUE(input$apply_56day_trim)) {
+      trim_msgs <- character()
+      
+      trimmed <- withCallingHandlers(
+        {
+          trim_images_56days(res)
+        },
+        message = function(m) {
+          trim_msgs <<- c(trim_msgs, m$message)
+          invokeRestart("muffleMessage")
+        },
+        warning = function(w) {
+          warns <<- c(warns, w$message)
+          invokeRestart("muffleWarning")
+        }
+      )
+      
+      images_checked(trimmed)
+      images_issues(list(
+        messages = c(msgs, trim_msgs),
+        warnings = warns
+      ))
+    } else {
+      images_checked(res)
+      images_issues(list(
+        messages = c(
+          msgs,
+          "Skipped the optional 56-day trim; using all validated images that fall within the deployment windows."
+        ),
+        warnings = warns
+      ))
+    }
   })
   
   output$images_check_log <- renderText({
@@ -2450,7 +2489,7 @@ server <- function(input, output, session) {
       tips <- c(tips, "This usually means an older function definition is still loaded. Restart R and launch this app from the current project folder.")
     }
     if (grepl("zero camera-days", error_text, ignore.case = TRUE)) {
-      tips <- c(tips, "One or more cameras ended up with zero effort days. Check Start Date/End Date, malfunction handling, and 56-day trimming.")
+      tips <- c(tips, "One or more cameras ended up with zero effort days. Check Start Date/End Date, malfunction handling, and the optional 56-day trimming choice.")
     }
     if (grepl("camera_counts and camera_days must have length nrow\\(out\\)", error_text)) {
       tips <- c(tips, "The camera table, counts, and camera-days vectors got out of sync. Re-upload the data and check the NPS model-input step.")
@@ -2661,6 +2700,7 @@ server <- function(input, output, session) {
       log_sigma_sd = input$log_sigma_sd,
       log_lam0_sd = input$log_lam0_sd,
       sd_eps_shape = input$sd_eps_shape,
+      sd_eps_rate = input$sd_eps_rate,
       adaptive = TRUE,
       compute_WAIC = waic,
       diagnostic_mode = FALSE,
@@ -3666,13 +3706,10 @@ server <- function(input, output, session) {
   })
   
   nps_combo <- reactive({
-    if (is.null(rem_nps_fit()) || is.null(tte_nps_fit()) || is.null(uscr_nps_fit())) {
-      return(NULL)
-    }
     build_combo_table_from_fits(
       list(
-        REM  = rem_nps_fit(),
-        TTE  = tte_nps_fit(),
+        REM = rem_nps_fit(),
+        TTE = tte_nps_fit(),
         USCR = uscr_nps_fit()
       )
     )
@@ -3711,14 +3748,21 @@ server <- function(input, output, session) {
       paste0("DEER_NPS_posterior_summary_", Sys.Date(), ".csv")
     },
     content = function(file) {
-      r <- rem_nps_fit()
-      t <- tte_nps_fit()
-      u <- uscr_nps_fit()
-      req(r, t, u)
+      fits <- list(
+        REM = rem_nps_fit(),
+        TTE = tte_nps_fit(),
+        USCR = uscr_nps_fit()
+      )
+      fits <- fits[!vapply(fits, is.null, logical(1))]
+      req(length(fits) > 0)
       df <- dplyr::bind_rows(
-        dplyr::mutate(posterior_summary_df(r), model = "REM", .before = 1),
-        dplyr::mutate(posterior_summary_df(t), model = "TTE", .before = 1),
-        dplyr::mutate(posterior_summary_df(u), model = "USCR", .before = 1)
+        lapply(names(fits), function(model_name) {
+          dplyr::mutate(
+            posterior_summary_df(fits[[model_name]]),
+            model = model_name,
+            .before = 1
+          )
+        })
       )
       readr::write_csv(df, file)
     }
@@ -3729,7 +3773,7 @@ server <- function(input, output, session) {
     if (is.null(combo)) {
       return(DT::datatable(
         data.frame(
-          Note = "For NPS data: run REM, TTE, and USCR from their tabs first."
+          Note = "Run at least one uploaded-data model from its tab first. The table will update as REM, TTE, and USCR finish."
         ),
         options = list(dom = "t", paging = FALSE),
         rownames = FALSE

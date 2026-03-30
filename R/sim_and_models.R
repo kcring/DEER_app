@@ -810,7 +810,7 @@ build_uscr_code <- function(J) {
       log_sigma ~ dnorm(log_sigma_mean, sd = log_sigma_sd)
       log_lam_0 ~ dnorm(0, sd = log_lam0_sd)
       psi ~ dunif(0, 1)
-      sd_eps ~ dgamma(sd_eps_shape, sd_eps_shape)
+      sd_eps ~ dgamma(sd_eps_shape, sd_eps_rate)
 
       sigma <- exp(log_sigma)
       lam_0 <- exp(log_lam_0)
@@ -852,7 +852,7 @@ build_uscr_code <- function(J) {
       log_sigma ~ dnorm(log_sigma_mean, sd = log_sigma_sd)
       log_lam_0 ~ dnorm(0, sd = log_lam0_sd)
       psi ~ dunif(0, 1)
-      sd_eps ~ dgamma(sd_eps_shape, sd_eps_shape)
+      sd_eps ~ dgamma(sd_eps_shape, sd_eps_rate)
 
       sigma <- exp(log_sigma)
       lam_0 <- exp(log_lam_0)
@@ -908,6 +908,7 @@ make_uscr_constants <- function(out,
                                 log_sigma_sd,
                                 log_lam0_sd,
                                 sd_eps_shape,
+                                sd_eps_rate,
                                 buffer_chi_p,
                                 buffer_scale) {
   ss <- uscr_state_space_and_area(
@@ -927,7 +928,8 @@ make_uscr_constants <- function(out,
     log_sigma_mean = log_sigma_mean,
     log_sigma_sd = log_sigma_sd,
     log_lam0_sd = log_lam0_sd,
-    sd_eps_shape = sd_eps_shape
+    sd_eps_shape = sd_eps_shape,
+    sd_eps_rate = sd_eps_rate
   )
 
   if (const$J == 1L) {
@@ -1135,6 +1137,7 @@ run_USCR <- function(out,
                      log_sigma_sd = 0.1451,
                      log_lam0_sd = 1,
                      sd_eps_shape = 1,
+                     sd_eps_rate = 1,
                      buffer_chi_p = 0.99,
                      buffer_scale = 0.40,
                      adaptive = TRUE,
@@ -1236,6 +1239,7 @@ run_USCR <- function(out,
         log_sigma_sd = log_sigma_sd,
         log_lam0_sd = log_lam0_sd,
         sd_eps_shape = sd_eps_shape,
+        sd_eps_rate = sd_eps_rate,
         buffer_chi_p = buffer_chi_p,
         buffer_scale = buffer_scale
       )
@@ -1328,6 +1332,7 @@ run_USCR <- function(out,
     log_sigma_sd = log_sigma_sd,
     log_lam0_sd = log_lam0_sd,
     sd_eps_shape = sd_eps_shape,
+    sd_eps_rate = sd_eps_rate,
     buffer_chi_p = buffer_chi_p,
     buffer_scale = buffer_scale
   )
@@ -1402,7 +1407,9 @@ run_USCR <- function(out,
       psi_prob_cutoff = psi_prob_cutoff,
       buffer_chi_p = buffer_chi_p,
       buffer_scale = buffer_scale,
-      area_mi2 = final_const$area_mi2
+      area_mi2 = final_const$area_mi2,
+      sd_eps_shape = sd_eps_shape,
+      sd_eps_rate = sd_eps_rate
     )
   )
 }

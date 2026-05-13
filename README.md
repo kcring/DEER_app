@@ -99,7 +99,7 @@ Rscript -e "shiny::runApp('/path/to/DEER_app')"
   - **Deployment file**: Camera deployment information such as where and when cameras were set and recording
   - **Images file**: Detection records such as timestamps, species, counts, and Cluster IDs
 - See the **Add your data** tab for required column specifications (including **`Timestamp`** on images)
-- During upload, you can optionally trim each camera to the first 56 deployed days to match the current park workflow
+- During upload, you can optionally trim images at each camera to the first 56 deployed days to meet the closed-population assumption used by the models
 - Upload files using the file input controls
 
 ### Step 2: Review Data Summary
@@ -149,7 +149,7 @@ deer_app_v2/
 │   ├── deer_app_logo.png    # Main app logo
 │   ├── wvu_logo.png         # WVU logo
 │   ├── nps_logo.png         # NPS logo
-│   └── usgs_logo.png        # Optional; add only with USGS permission (see below)
+│  
 ├── README.md                # This file
 └── deer_app_v2.Rproj        # RStudio project file
 ```
@@ -214,8 +214,8 @@ Cross-year winter surveys (for example December to January) are supported; the a
 ## Deployment and concurrent users
 
 - **Single session:** `shiny::runApp()` is intended for one analyst at a time on a local or shared machine.
-- **Concurrent users:** A production deployment (e.g. **Shiny Server**, **Posit Connect**, or **shinyapps.io**) runs one R process per app instance; multiple users share that process and can block each other during long MCMC runs. The current app includes a first background-processing prototype for uploaded-data REM runs, but USCR and TTE can still block other users during long jobs. For many simultaneous users, plan **multiple workers** or separate instances and sufficient CPU/RAM.
-- **Tab UX:** The app scrolls to the top when you switch main tabs (`shinyjs`) so long pages do not leave you mid-scroll.
+- **Concurrent users:** work in progress
+
 
 
 

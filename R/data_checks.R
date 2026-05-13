@@ -43,6 +43,15 @@ clean_deployment_import <- function(deployments) {
   nm <- gsub("[\\s\\p{Z}]+", " ", nm, perl = TRUE)
   nm <- trimws(nm)
   names(deployments) <- nm
+
+  # Accept either Park or Site as the broader site identifier.
+  if (!"Park" %in% names(deployments)) {
+    if ("Site" %in% names(deployments)) {
+      deployments$Park <- deployments$Site
+    } else {
+      deployments$Park <- NA_character_
+    }
+  }
   
   # Trim leading/trailing whitespace from all character columns
   deployments[] <- lapply(deployments, function(x) {
@@ -122,11 +131,10 @@ check_deployments <- function(deployment, images = NULL) {
   
   # ---- Column presence ----
   required_cols <- c(
-    "Park", "Site Name", "Camera ID", "SD Card ID", 
-    "Start Date", "Start Time", "End Date", "End Time", 
-    "Latitude", "Longitude", "Camera Height", 
-    "Camera Orientation", "Camera Functioning", 
-    "Camera Malfunction Date", "Detection Distance", "Notes"
+    "Site Name",
+    "Start Date", "Start Time", "End Date", "End Time",
+    "Latitude", "Longitude", "Camera Functioning",
+    "Camera Malfunction Date", "Detection Distance"
   )
   
   missing_cols <- setdiff(required_cols, names(deployment))
@@ -159,60 +167,35 @@ check_deployments <- function(deployment, images = NULL) {
   }, deployment$`Site Name`, deployment$Park, USE.NAMES = FALSE)
   
   # --- Site Name validation ---
+  valid_regex <- paste0(
+    "^(",
+    "[A-Z]{4}_(0[1-9]|[1-9][0-9]|[1-9][0-9]{2})",
+    "|",
+    "[A-Z]{2,}_(0[1-9]|[1-9][0-9]|[1-9][0-9]{2})",
+    "|",
+    "[A-Z]{4}_[A-Z]{2,}_(0[1-9]|[1-9][0-9]|[1-9][0-9]{2})",
+    "|",
+    "[A-Z]{4}[A-Z]{2,}_(0[1-9]|[1-9][0-9]|[1-9][0-9]{2})",
+    ")$"
+  )
   for (i in seq_len(nrow(deployment))) {
-    park <- deployment$Park[i]
-    sn   <- trimws(deployment$`Site Name`[i]) 
-    
-    if (!is.na(sn) && sn != "") {
-      # Suffix: 01–09, 10–99, or 100–999
-      re_suffix <- "(0[1-9]|[1-9][0-9]|[1-9][0-9]{2})$"
-      
-      # Build patterns
-      re_park_only        <- paste0("^", park, "_", re_suffix)              # FRSP_01
-      re_unit_only        <- paste0("^[A-Za-z]{2,}_", re_suffix)            # WILD_01
-      re_park_unit_us     <- paste0("^", park, "_[A-Za-z]{2,}_", re_suffix) # FRSP_WILD_01
-      re_park_unit_concat <- paste0("^", park, "[A-Za-z]{2,}_", re_suffix)  # FRSPWILD_01
-      
-      patterns <- c(re_park_only, re_unit_only, re_park_unit_us, re_park_unit_concat)
-      
-      is_valid <- any(vapply(
-        patterns,
-        function(p) grepl(p, sn, ignore.case = TRUE),
-        logical(1)
+    sn <- trimws(deployment$`Site Name`[i])
+    if (!is.na(sn) && sn != "" && !grepl(valid_regex, sn)) {
+      issues <- c(issues, paste0(
+        "Invalid Site_Name: ", sn,
+        " → must follow an allowed format such as 'PARK_##', 'UNIT_##', 'PARK_UNIT_##', or 'PARKUNIT_##'."
       ))
-      
-      if (!is_valid) {
-        issues <- c(issues, paste0(
-          "Invalid Site_Name: ", sn,
-          " → must match one of: 'PARK_##/PARK_###' (e.g., FRSP_09 or FRSP_101), ",
-          "'UNIT_##/UNIT_###' (e.g., WILD_01), ",
-          "'PARK_UNIT_##' (e.g., FRSP_WILD_01), or 'PARKUNIT_##' (e.g., FRSPWILD_01)."
-        ))
-      }
     }
   }
   
   # ---- Per-row checks ----
-  deployment_cols <- setdiff(required_cols, c("Park", "Site Name", "Notes"))
+  deployment_cols <- setdiff(required_cols, "Site Name")
   
   for (i in seq_len(nrow(deployment))) {
     row_values <- deployment[i, deployment_cols]
     
     # Skip row if all deployment columns except Park, Site Name, Notes are blank
     if (all(is.na(row_values) | row_values == "")) next
-    
-    cam <- deployment$`Camera ID`[i]
-    
-    # --- Camera ID ---
-    if (is.na(cam) || cam == "") {
-      issues <- c(issues, paste("❌ Missing Camera ID in row", i, " — must have a value"))
-    }
-    
-    # --- SD Card ID ---
-    sd_val <- deployment$`SD Card ID`[i]
-    if (is.na(sd_val) || sd_val == "") {
-      issues <- c(issues, paste("❌ Missing SD Card ID in row", i, " — must have a value"))
-    }
     
     # --- Dates ---
     date_cols <- c("Start Date", "End Date")
@@ -254,16 +237,15 @@ check_deployments <- function(deployment, images = NULL) {
     }
     
     # ---- Numeric checks with suppression ----
-    num_cols <- c("Camera Height", "Detection Distance")
-    for (col in num_cols) {
-      val <- deployment[[col]][i]
-      if (!is.na(val) && val != "" && suppressWarnings(is.na(as.numeric(val)))) {
-        issues <- c(issues, paste("❌ Non-numeric value in", col, "row", i, ":", val))
-      }
-      
-      if (col == "Longitude" && !is.na(val) && val != "" && as.numeric(val) >= 0) {
-        issues <- c(issues, paste("❌ Longitude in row", i, "is not negative:", val,
-                                  " — must have a minus sign for western hemisphere"))
+    dd_val <- deployment$`Detection Distance`[i]
+    if (!is.na(dd_val) && dd_val != "" && suppressWarnings(is.na(as.numeric(dd_val)))) {
+      issues <- c(issues, paste("❌ Non-numeric value in Detection Distance row", i, ":", dd_val))
+    }
+
+    if ("Camera Height" %in% names(deployment)) {
+      ch_val <- deployment$`Camera Height`[i]
+      if (!is.na(ch_val) && ch_val != "" && suppressWarnings(is.na(as.numeric(ch_val)))) {
+        issues <- c(issues, paste("❌ Non-numeric value in Camera Height row", i, ":", ch_val))
       }
     }
     
@@ -285,14 +267,16 @@ check_deployments <- function(deployment, images = NULL) {
     }
     
     # --- Camera Orientation ---
-    val <- deployment$`Camera Orientation`[i]
-    valid_cardinals <- c("N","NE","E","SE","S","SW","W","NW")
-    if (!is.na(val) && val != "") {
-      val_upper <- toupper(val)
-      val_numeric <- suppressWarnings(as.numeric(val))
-      if (!(val_upper %in% valid_cardinals | (!is.na(val_numeric) & val_numeric >= 0 & val_numeric <= 359))) {
-        issues <- c(issues, paste("❌ Invalid Camera Orientation in row", i, ":", val,
-                                  "— must be N/NE/.../NW or 0–359 degrees"))
+    if ("Camera Orientation" %in% names(deployment)) {
+      val <- deployment$`Camera Orientation`[i]
+      valid_cardinals <- c("N","NE","E","SE","S","SW","W","NW")
+      if (!is.na(val) && val != "") {
+        val_upper <- toupper(val)
+        val_numeric <- suppressWarnings(as.numeric(val))
+        if (!(val_upper %in% valid_cardinals | (!is.na(val_numeric) & val_numeric >= 0 & val_numeric <= 359))) {
+          issues <- c(issues, paste("❌ Invalid Camera Orientation in row", i, ":", val,
+                                    "— must be N/NE/.../NW or 0–359 degrees"))
+        }
       }
     }
     
@@ -328,7 +312,7 @@ check_images <- function(images, deployments, survey_year = NULL) {
   
   # ---- Required columns ----
   required_cols <- c("Site Name", "Latitude", "Longitude", "Timestamp",
-                     "Species", "Sighting Count", "Image URL", "Cluster ID")
+                     "Species", "Sighting Count", "Cluster ID")
   missing_cols <- setdiff(required_cols, names(images))
   if (length(missing_cols) > 0) {
     stop(paste0(
@@ -396,7 +380,7 @@ check_images <- function(images, deployments, survey_year = NULL) {
   }
   
   # ---- Required fields check ----
-  for (field in c("Species", "Sighting Count", "Image URL")) {
+  for (field in c("Species", "Sighting Count", "Cluster ID")) {
     missing_rows <- which(is.na(images[[field]]) | images[[field]] == "")
     if (length(missing_rows) > 0) {
       issues <- c(issues, paste0("❌ Missing ", field, " in ", length(missing_rows), " image(s)"))
@@ -466,7 +450,7 @@ check_images <- function(images, deployments, survey_year = NULL) {
       issues <- c(issues, paste0(
         "⚠️ Timestamp outside deployment window at site ", site, ": ",
         "Start Date = ", start_date, ", First image = ", first_img, ". ",
-        "Check TrapTagger and adjust first photo timestamp if needed."
+        "Check the tagging/export software and adjust the first photo timestamp if needed."
       ))
     }
   }

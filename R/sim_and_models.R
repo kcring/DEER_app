@@ -491,6 +491,248 @@ build_nps_model_inputs <- function(deployments, images) {
 # -------------------------------------------------------------------
 # 3. REM model (nimble) — mirrors Rmd structure
 # -------------------------------------------------------------------
+run_basic_nimble_chain <- function(code,
+                                   constants,
+                                   data,
+                                   monitors,
+                                   niter,
+                                   nburnin,
+                                   thin,
+                                   compute_WAIC = TRUE) {
+  quiet_require("nimble")
+
+  out <- nimble::nimbleMCMC(
+    code = code,
+    constants = constants,
+    data = data,
+    monitors = monitors,
+    niter = niter,
+    nburnin = nburnin,
+    thin = thin,
+    WAIC = compute_WAIC,
+    summary = FALSE,
+    samplesAsCodaMCMC = FALSE
+  )
+
+  normalize_nimble_output(out)
+}
+
+run_basic_nimble_chains <- function(code,
+                                    constants,
+                                    data,
+                                    monitors,
+                                    niter,
+                                    nburnin,
+                                    thin,
+                                    n_chains = 1,
+                                    parallel_chains = TRUE,
+                                    compute_WAIC = TRUE,
+                                    seed = NULL) {
+  quiet_require("parallel")
+
+  if (n_chains <= 1L || !parallel_chains) {
+    if (!is.null(seed)) {
+      set.seed(seed)
+    }
+
+    return(list(
+      run_basic_nimble_chain(
+        code = code,
+        constants = constants,
+        data = data,
+        monitors = monitors,
+        niter = niter,
+        nburnin = nburnin,
+        thin = thin,
+        compute_WAIC = compute_WAIC
+      )
+    ))
+  }
+
+  cl_size <- min(n_chains, max(1L, parallel::detectCores() - 1L))
+  cl <- parallel::makeCluster(cl_size)
+  on.exit(parallel::stopCluster(cl), add = TRUE)
+
+  if (!is.null(seed)) {
+    parallel::clusterSetRNGStream(cl, iseed = seed)
+  }
+
+  fits <- parallel::parLapply(
+    cl = cl,
+    X = seq_len(n_chains),
+    fun = function(chain_id, code, constants, data, monitors,
+                   niter, nburnin, thin, compute_WAIC) {
+      library(nimble)
+
+      out <- nimble::nimbleMCMC(
+        code = code,
+        constants = constants,
+        data = data,
+        monitors = monitors,
+        niter = niter,
+        nburnin = nburnin,
+        thin = thin,
+        WAIC = compute_WAIC,
+        summary = FALSE,
+        samplesAsCodaMCMC = FALSE
+      )
+
+      if (is.matrix(out) || is.data.frame(out)) {
+        return(list(samples = as.matrix(out), WAIC = NULL))
+      }
+      out
+    },
+    code = code,
+    constants = constants,
+    data = data,
+    monitors = monitors,
+    niter = niter,
+    nburnin = nburnin,
+    thin = thin,
+    compute_WAIC = compute_WAIC
+  )
+
+  fits
+}
+
+run_encounter_rate_model <- function(method,
+                                     code,
+                                     constants,
+                                     data,
+                                     monitors,
+                                     iter,
+                                     burnin,
+                                     thin,
+                                     n_chains,
+                                     adaptive = TRUE,
+                                     compute_WAIC = TRUE,
+                                     rhat_target = 1.1,
+                                     max_adapt_rounds = NULL,
+                                     parallel_chains = TRUE,
+                                     status_callback = NULL,
+                                     seed = NULL,
+                                     verbose = FALSE) {
+  report_status <- function(stage, detail = NULL, value = NULL) {
+    if (is.function(status_callback)) {
+      try(
+        status_callback(stage = stage, detail = detail, value = value),
+        silent = TRUE
+      )
+    }
+  }
+
+  iter <- as.integer(iter)
+  burnin <- as.integer(burnin)
+  thin <- as.integer(max(1, thin))
+  n_chains <- as.integer(max(1, n_chains))
+
+  report_status(
+    "setup",
+    paste0("Prepared ", method, " model code and inputs."),
+    value = 0.1
+  )
+
+  current_iter <- iter
+  current_thin <- thin
+  round_i <- 0L
+  current_rhat <- Inf
+  adapt_log <- list()
+  last_fit <- NULL
+
+  repeat {
+    round_i <- round_i + 1L
+
+    if (!isTRUE(adaptive) && round_i > 1L) {
+      break
+    }
+
+    if (!is.null(max_adapt_rounds) && round_i > as.integer(max_adapt_rounds)) {
+      warning(
+        method,
+        " adaptive tuning reached max_adapt_rounds = ",
+        max_adapt_rounds,
+        " before convergence. Proceeding with the latest fit."
+      )
+      break
+    }
+
+    detail <- paste0(
+      method, " tuning round ", round_i,
+      ": iter=", current_iter,
+      ", thin=", current_thin,
+      ", chains=", n_chains
+    )
+
+    if (isTRUE(verbose)) {
+      message(detail)
+    }
+    report_status(
+      "tuning",
+      detail,
+      value = min(0.15 + 0.2 * round_i, 0.9)
+    )
+
+    fit <- run_basic_nimble_chains(
+      code = code,
+      constants = constants,
+      data = data,
+      monitors = monitors,
+      niter = current_iter,
+      nburnin = burnin,
+      thin = current_thin,
+      n_chains = n_chains,
+      parallel_chains = parallel_chains,
+      compute_WAIC = compute_WAIC,
+      seed = if (is.null(seed)) NULL else seed + round_i
+    )
+
+    samples_list <- lapply(fit, `[[`, "samples")
+    current_rhat <- safe_rhat_max(samples_list)
+    converged <- is.na(current_rhat) || current_rhat <= rhat_target
+
+    adapt_log[[round_i]] <- data.frame(
+      round = round_i,
+      niter = current_iter,
+      nburnin = burnin,
+      thin = current_thin,
+      n_chains = n_chains,
+      rhat_max = current_rhat,
+      stringsAsFactors = FALSE
+    )
+
+    last_fit <- fit
+
+    if (converged || !isTRUE(adaptive)) {
+      break
+    }
+
+    current_iter <- current_iter * 2L
+    current_thin <- max(1L, floor((current_iter - burnin) / 1000))
+  }
+
+  samples_list <- lapply(last_fit, `[[`, "samples")
+  samples_all <- do.call(rbind, samples_list)
+
+  list(
+    method = method,
+    samples_list = samples_list,
+    samples_all = samples_all,
+    waic = extract_waic_mean(last_fit),
+    fit_objects = last_fit,
+    tuning_history = if (length(adapt_log) > 0L) do.call(rbind, adapt_log) else NULL,
+    final_rhat_max = current_rhat,
+    settings = list(
+      iter = current_iter,
+      burnin = burnin,
+      thin = current_thin,
+      n_chains = n_chains,
+      adaptive = adaptive,
+      max_adapt_rounds = max_adapt_rounds,
+      rhat_target = rhat_target
+    )
+  )
+}
+
 run_REM <- function(y,
                     r_km,
                     camera_days,
@@ -499,10 +741,18 @@ run_REM <- function(y,
                     thin     = 5,
                     n_chains = 3,
                     D_max    = 200,
-                    log_v_mean = 1.339,
-                    log_v_sd   = 0.2955,
+                    log_v_mean = 1.130,
+                    log_v_sd   = 0.3372,
                     sd_eps_max = 10,
-                    theta_deg  = 55) {
+                    theta_deg  = 55,
+                    adaptive = TRUE,
+                    compute_WAIC = TRUE,
+                    rhat_target = 1.1,
+                    max_adapt_rounds = NULL,
+                    parallel_chains = TRUE,
+                    status_callback = NULL,
+                    seed = NULL,
+                    verbose = FALSE) {
   
   quiet_require("nimble")
   
@@ -558,62 +808,25 @@ run_REM <- function(y,
   
   monitors <- c("D", "v", "sd_eps",
                 "bp", "sum_obs", "sum_sim", "D_mi2")
-  
-  # Parallel chain execution (like Rmd)
-  quiet_require("parallel")
-  
-  run_MCMC_chain <- function(index, code, constants, data, monitors,
-                             niter, nburnin, thin) {
-    library(nimble)
-    nimble::nimbleMCMC(
-      code      = code,
-      constants = constants,
-      data      = data,
-      monitors  = monitors,
-      niter     = niter,
-      nburnin   = nburnin,
-      thin      = thin,
-      WAIC      = TRUE
-    )
-  }
-  
-  if (n_chains > 1) {
-    cl_size <- min(n_chains, parallel::detectCores() - 1)
-    cl_size <- max(1, cl_size)
-    cl <- parallel::makeCluster(cl_size)
-    on.exit(parallel::stopCluster(cl), add = TRUE)
-    
-    fits <- parallel::parLapply(
-      cl        = cl,
-      X         = seq_len(n_chains),
-      fun       = run_MCMC_chain,
-      code      = code,
-      constants = Const,
-      data      = Data,
-      monitors  = monitors,
-      niter     = iter,
-      nburnin   = burnin,
-      thin      = thin
-    )
-  } else {
-    fits <- list(run_MCMC_chain(1, code, Const, Data, monitors, iter, burnin, thin))
-  }
-  
-  samples_list <- lapply(fits, `[[`, "samples")
-  samples_all  <- do.call(rbind, samples_list)
-  
-  waic_vec <- vapply(
-    fits,
-    function(f) if (!is.null(f$WAIC)) f$WAIC$WAIC else NA_real_,
-    numeric(1)
-  )
-  waic_mean <- mean(waic_vec, na.rm = TRUE)
-  
-  list(
-    method       = "REM",
-    samples_list = samples_list,
-    samples_all  = samples_all,
-    waic         = waic_mean
+
+  run_encounter_rate_model(
+    method = "REM",
+    code = code,
+    constants = Const,
+    data = Data,
+    monitors = monitors,
+    iter = iter,
+    burnin = burnin,
+    thin = thin,
+    n_chains = n_chains,
+    adaptive = adaptive,
+    compute_WAIC = compute_WAIC,
+    rhat_target = rhat_target,
+    max_adapt_rounds = max_adapt_rounds,
+    parallel_chains = parallel_chains,
+    status_callback = status_callback,
+    seed = seed,
+    verbose = verbose
   )
 }
 
@@ -628,10 +841,18 @@ run_TTE <- function(y,
                     thin     = 5,
                     n_chains = 3,
                     D_max    = 200,
-                    log_v_mean = 1.339,
-                    log_v_sd   = 0.2955,
+                    log_v_mean = 1.130,
+                    log_v_sd   = 0.3372,
                     sd_eps_max = 10,
-                    theta_deg  = 55) {
+                    theta_deg  = 55,
+                    adaptive = TRUE,
+                    compute_WAIC = TRUE,
+                    rhat_target = 1.1,
+                    max_adapt_rounds = NULL,
+                    parallel_chains = TRUE,
+                    status_callback = NULL,
+                    seed = NULL,
+                    verbose = FALSE) {
   
   quiet_require("nimble")
   
@@ -691,62 +912,25 @@ run_TTE <- function(y,
   
   monitors <- c("D", "v", "sd_eps",
                 "bp", "sum_obs", "sum_sim", "D_mi2")
-  
-  # Parallel chain execution (like Rmd)
-  quiet_require("parallel")
-  
-  run_MCMC_chain <- function(index, code, constants, data, monitors,
-                             niter, nburnin, thin) {
-    library(nimble)
-    nimble::nimbleMCMC(
-      code      = code,
-      constants = constants,
-      data      = data,
-      monitors  = monitors,
-      niter     = niter,
-      nburnin   = nburnin,
-      thin      = thin,
-      WAIC      = TRUE
-    )
-  }
-  
-  if (n_chains > 1) {
-    cl_size <- min(n_chains, parallel::detectCores() - 1)
-    cl_size <- max(1, cl_size)
-    cl <- parallel::makeCluster(cl_size)
-    on.exit(parallel::stopCluster(cl), add = TRUE)
-    
-    fits <- parallel::parLapply(
-      cl        = cl,
-      X         = seq_len(n_chains),
-      fun       = run_MCMC_chain,
-      code      = code,
-      constants = Const,
-      data      = Data,
-      monitors  = monitors,
-      niter     = iter,
-      nburnin   = burnin,
-      thin      = thin
-    )
-  } else {
-    fits <- list(run_MCMC_chain(1, code, Const, Data, monitors, iter, burnin, thin))
-  }
-  
-  samples_list <- lapply(fits, `[[`, "samples")
-  samples_all  <- do.call(rbind, samples_list)
-  
-  waic_vec <- vapply(
-    fits,
-    function(f) if (!is.null(f$WAIC)) f$WAIC$WAIC else NA_real_,
-    numeric(1)
-  )
-  waic_mean <- mean(waic_vec, na.rm = TRUE)
-  
-  list(
-    method       = "TTE",
-    samples_list = samples_list,
-    samples_all  = samples_all,
-    waic         = waic_mean
+
+  run_encounter_rate_model(
+    method = "TTE",
+    code = code,
+    constants = Const,
+    data = Data,
+    monitors = monitors,
+    iter = iter,
+    burnin = burnin,
+    thin = thin,
+    n_chains = n_chains,
+    adaptive = adaptive,
+    compute_WAIC = compute_WAIC,
+    rhat_target = rhat_target,
+    max_adapt_rounds = max_adapt_rounds,
+    parallel_chains = parallel_chains,
+    status_callback = status_callback,
+    seed = seed,
+    verbose = verbose
   )
 }
 
@@ -1133,8 +1317,8 @@ run_USCR <- function(out,
                      thin = 10,
                      n_chains = 3,
                      M = 1000,
-                     log_sigma_mean = -1.4442,
-                     log_sigma_sd = 0.1451,
+                     log_sigma_mean = -1.5269,
+                     log_sigma_sd = 0.1535,
                      log_lam0_sd = 1,
                      sd_eps_shape = 1,
                      sd_eps_rate = 1,

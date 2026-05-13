@@ -74,6 +74,7 @@ future::plan(future::multisession, workers = async_workers)
 
 source("R/sim_and_models.R")   # run_USCR(), run_REM(), run_TTE()
 source("R/data_checks.R")      # QC + summary helpers
+source("R/camera_array_helpers.R")
 
 # Pin the active USCR implementation to the current file contents so stale
 # objects from prior sessions cannot route the app through an older wrapper.
@@ -179,7 +180,7 @@ build_combo_table_from_fits <- function(fits) {
 
   table_out <- tibble::tibble(
     Method = c(model_names, summary_rows),
-    `Mean density (deer/mi²)` = as.numeric(means),
+    `Mean density (animals/mi²)` = as.numeric(means),
     `Lower 2.5%` = as.numeric(lower),
     `Upper 97.5%` = as.numeric(upper),
     `Prob > 20 DPSM` = as.numeric(prob20),
@@ -207,7 +208,7 @@ build_sim_combo_table_uscr_only <- function(uscr_fit) {
   )
   table_out <- tibble::tibble(
     Method                    = "USCR",
-    `Mean density (deer/mi²)` = mean(D),
+    `Mean density (animals/mi²)` = mean(D),
     `Lower 2.5%`              = stats::quantile(D, 0.025),
     `Upper 97.5%`             = stats::quantile(D, 0.975),
     `Prob > 20 DPSM`          = mean(D > 20),
@@ -498,7 +499,7 @@ ui <- page_fillable(
                 tags$span(style = "color: var(--rw3);", "R"), tags$span(style = "color: #666;", "ates")
               ),
               tags$p(class = "small", style = "opacity: 0.9; color: var(--muted); text-align: center;",
-                "uSCR · REM · TTE — three unmarked camera methods for estimating deer density, reported as deer/mi² by default."
+                "uSCR · REM · TTE — three unmarked camera methods for estimating animal density, reported as animals/mi² by default."
               )
             )
           ),
@@ -510,13 +511,13 @@ ui <- page_fillable(
               tags$h1("Welcome to the DEER app!"),
               tags$h2(style = "font-size: 1.1rem; margin-top: 0.5rem; margin-bottom: 1rem; color: var(--muted); font-weight: normal;", "What it does"),
               tags$p(class = "lead",
-                "The DEER app helps estimate ", tags$strong("deer density in parks"), " from ",
+                "The DEER app helps estimate ", tags$strong("animal density at sites"), " from ",
                 tags$strong("unmarked camera detections"), ". It fits ", tags$strong("three complementary models"),
                 ", reports ", tags$strong("credible intervals and variability"), ", and lets users ",
                 tags$strong("compare, diagnose, and average results"), ", rather than relying on a point estimate alone. The current upload workflow expects ",
                 "data on ", tags$strong("camera deployment"), " (e.g. where and when cameras were set and began recording) and ",
                 tags$strong("images CSVs"), ". The broader goal is a ", tags$strong("consistent, reproducible workflow"),
-                " that estimates ", tags$strong("deer and other animal densities"), " from camera trap data without ",
+                " that estimates ", tags$strong("animal densities"), " from camera trap data without ",
                 tags$strong("tedious individual marking strategies"), "."
               ),
               tags$div(class = "divider"),
@@ -535,14 +536,14 @@ ui <- page_fillable(
                   tags$h3("Reproducible!"),
                   tags$ul(
                     tags$li("Standardized CSV checks and shared defaults make analyses easier to repeat."),
-                    tags$li("Downloadable per-model summaries support park-to-park or project-to-project comparisons.")
+                    tags$li("Downloadable per-model summaries support site-to-site or project-to-project comparisons.")
                   )
                 ),
                 tags$div(
                   class = "about-card",
                   tags$h3("Rigorous"),
                   tags$ul(
-                    tags$li("Reports deer density with uncertainty, including credible intervals."),
+                    tags$li("Reports animal density with uncertainty, including credible intervals."),
                     tags$li("Uses three model types and a WAIC-weighted model-averaged estimate for uploaded field data."),
                     tags$li("Brings together spatial and encounter-rate approaches in one transparent workflow.")
                   )
@@ -563,31 +564,28 @@ ui <- page_fillable(
                   style = "margin: 1rem 0;",
                   tags$h4(style = "font-size: 1.1rem; font-weight: 500;", "Option 1: Simulate data"),
                   tags$p(
-                    "Go to the ", tags$strong("'Simulate data'"), " tab. The app now includes ",
-                    tags$strong("two simulation paths"), ":"
+                    "Go to the ", tags$strong("'Simulate data'"), " tab. The app uses ",
+                    tags$strong("one shared spatial simulator"),
+                    " that can feed all three model tabs."
                   ),
                   tags$ul(
-                    tags$li(tags$strong("uSCR grid simulator"), " — spatial toy data generated under the uSCR assumptions, useful for exploring the full spatial workflow."),
-                    tags$li(tags$strong("REM/TTE teaching simulators"), " — model-based encounter-rate simulators for learning or debugging those methods individually.")
+                    tags$li(tags$strong("Shared spatial simulator"), " — spatial toy data generated under the uSCR assumptions, then reformatted so USCR, REM, and TTE can all run on the same simulated dataset.")
                   ),
-                  tags$p("For the uSCR grid simulator you can adjust:"),
+                  tags$p("For the shared simulator you can adjust:"),
                   tags$ul(
                     tags$li("Grid dimension (n × n cameras)"),
                     tags$li("Camera spacing (meters)"),
                     tags$li("Number of days"),
-                    tags$li("True density (deer/km²)"),
+                    tags$li("True density (animals/km²)"),
                     tags$li("Detection parameters (sigma, lambda0)"),
                     tags$li("Random seed for reproducibility")
                   ),
                   tags$p(
-                    "Press ", tags$strong("'Simulate grid'"), " to generate the spatial toy data, then run ",
-                    tags$strong("USCR on simulated data"), " from the USCR tab. If you want method-specific simulated data for ",
-                    tags$strong("REM"), " or ", tags$strong("TTE"), ", use the ",
-                    tags$strong("teaching simulator"), " section in the same tab and then run those models from their own tabs."
+                    "Press ", tags$strong("'Simulate data'"), " to generate the shared simulated dataset, then run ",
+                    tags$strong("USCR"), ", ", tags$strong("REM"), ", and ", tags$strong("TTE"), " from their own tabs."
                   ),
                   tags$p(
-                    "The ", tags$strong("Compare & combine"), " tab summarizes the ",
-                    tags$strong("uSCR simulated workflow only"), "; the REM/TTE teaching simulators are intended for model-specific learning rather than cross-model combination."
+                    "The ", tags$strong("Compare & combine"), " tab summarizes whichever simulated model fits have finished from that shared dataset."
                   )
                 ),
                 tags$div(
@@ -599,7 +597,7 @@ ui <- page_fillable(
                     tags$li(tags$strong("Images CSV"), " — detection records such as timestamps, species, and ", tags$strong("Cluster ID"), " values. In this workflow, ", tags$strong("Cluster ID"), " means the unique identifier for an independent encounter event.")
                   ),
                   tags$p(
-                    "The current upload pipeline expects the ", tags$strong("TrapTagger / current park-workflow column names"), " described in the Add your data tab. Recommended camera spacing and camera counts come from the protocol, but the app analyzes the data you provide rather than requiring one exact array design or minimum camera count to function."
+                    "The current upload pipeline expects the ", tags$strong("exact column names"), " described in the Add your data tab. Recommended camera spacing and camera counts come from the protocol, but the app analyzes the data you provide rather than requiring one exact array design or minimum camera count to function."
                   ),
                   tags$p(
                     "Click the ", tags$strong("'Add your data'"), " tab for column requirements and examples. The app will automatically:"
@@ -607,7 +605,7 @@ ui <- page_fillable(
                   tags$ul(
                     tags$li("Standardize column names, whitespace, and common logical values such as Yes/No or TRUE/FALSE"),
                     tags$li("Run quality checks on the deployment and images files"),
-                    tags$li("Optionally trim each camera to the first 56 deployed days to match the current park workflow")
+                    tags$li("Optionally trim each camera to the first 56 deployed days to meet the closed-population assumption used by all three models")
                   )
                 ),
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 1rem;", "Step 2: Adjust settings (optional)"),
@@ -623,8 +621,7 @@ ui <- page_fillable(
                 ),
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 1rem;", "Step 3: Run the models"),
                 tags$p(
-                  tags$strong("Simulated data:"), " run ", tags$strong("USCR"), " from the USCR tab for the spatial grid simulator, or run ",
-                  tags$strong("REM"), " or ", tags$strong("TTE"), " from their own tabs after creating the matching teaching simulator data."
+                  tags$strong("Simulated data:"), " run ", tags$strong("USCR"), ", ", tags$strong("REM"), ", and ", tags$strong("TTE"), " from their own tabs after generating the shared simulated dataset."
                 ),
                 tags$p(
                   tags$strong("Uploaded field data:"), " use the ", tags$strong("USCR"), ", ", tags$strong("REM"), ", and ", tags$strong("TTE"),
@@ -637,23 +634,23 @@ ui <- page_fillable(
                   tags$li("Results appear below the buttons once each model completes.")
                 ),
                 tags$p(
-                  tags$em("Note:"), " USCR can take longer than 60 minutes for high-density parks, larger arrays, or larger ", tags$code("M"),
+                  tags$em("Note:"), " USCR can take longer than 60 minutes for high-density sites, larger arrays, or larger ", tags$code("M"),
                   " settings, so plan to be patient and, if needed, leave the computer running. REM and TTE are usually faster."
                 ),
                 tags$h2(style = "font-size: 1.5rem; font-weight: 600; margin-top: 0.5rem;", "Step 4: Compare results"),
                 tags$p("Use the ", tags$strong("'Compare & combine'"), " tab to:"),
                 tags$ul(
                   tags$li("For ", tags$strong("uploaded field data"), ": compare whichever model fits have finished so far, and compute WAIC-weighted summaries once multiple models are available."),
-                  tags$li("For ", tags$strong("simulated data"), ": review the uSCR simulated density summary."),
+                  tags$li("For ", tags$strong("simulated data"), ": compare whichever shared-simulation model fits have finished so far, just like the uploaded-data workflow."),
                   tags$li("Compare model performance using WAIC values for uploaded field data."),
                   tags$li("Download posterior summaries with parameter names, means, and 95% credible intervals.")
                 ),
                 tags$p(
-                  "The app currently reports ", tags$strong("deer per square mile (mi²)"), " by default, with credible intervals. Some inputs and simulations still use ",
-                  tags$strong("deer/km²"), " where noted."
+                  "The app currently reports ", tags$strong("animals per square mile (mi²)"), " by default, with credible intervals. Some inputs and simulations still use ",
+                  tags$strong("animals/km²"), " where noted."
                 ),
                 tags$p(
-                  tags$strong("Unit convention:"), " 1 deer/km² = 2.59 deer/mi², and 1 deer/mi² = 0.386 deer/km². The current app does not yet have a global unit toggle, so values are labeled explicitly where they appear."
+                  tags$strong("Unit convention:"), " 1 animal/km² = 2.59 animals/mi², and 1 animal/mi² = 0.386 animals/km². The current app does not yet have a global unit toggle, so values are labeled explicitly where they appear."
                 )
               )
             ),
@@ -792,7 +789,7 @@ ui <- page_fillable(
                 tags$p(
                   tags$span(class = "kicker", "Current default output:"),
                   " ",
-                  tags$strong("Deer per square mile (mi²)"),
+                  tags$strong("Animals per square mile (mi²)"),
                   " with credible intervals, plus per-model estimates and downloadable posterior summaries for transparency."
                 )
               )
@@ -861,8 +858,7 @@ ui <- page_fillable(
         nav_panel(
           "Simulate data",
           markdown(paste(
-            "Simulate a toy camera grid under **SECR** (*spatially explicit capture–recapture*) and run **USCR on simulated data** from the USCR tab.",
-            "REM and TTE also have separate **teaching simulators** below that generate model-specific count data from those formulas.",
+            "Simulate a toy camera grid under **SECR** (*spatially explicit capture–recapture*) and use that **shared spatial simulator** to run **USCR, REM, and TTE** from their model tabs for compare-ready simulated analyses.",
             "",
             "Adjust the simulation parameters below, then choose the model tab you want to test.",
             sep = "\n"
@@ -879,7 +875,7 @@ ui <- page_fillable(
                           min = 7, max = 60, value = 21, step = 1)
             ),
             column(4,
-              sliderInput("Dtrue", "True density for simulation (deer/km²)",
+              sliderInput("Dtrue", "True density for simulation (animals/km²)",
                           min = 5, max = 80, value = 25, step = 1),
               sliderInput("sigma", "Home-range scale σ (m)",
                           min = 80, max = 300, value = 150, step = 5),
@@ -894,7 +890,7 @@ ui <- page_fillable(
               p(class = "small", style = "color: var(--muted);",
                 "Detection angle θ for REM/TTE/USCR is set under ", tags$strong("Model settings"), "."),
               br(),
-              actionButton("run_sim", "Simulate grid", class = "btn-primary")
+              actionButton("run_sim", "Simulate data", class = "btn-primary")
             )
           ),
           tags$details(
@@ -920,7 +916,7 @@ ui <- page_fillable(
               ),
               tags$p(
                 tags$strong("True density"),
-                " is the underlying deer density used to generate the toy data. This input is in deer/km^2, while app summaries are reported in deer/mi^2."
+                " is the underlying animal density used to generate the toy data. This input is in animals/km^2, while app summaries are reported in animals/mi^2."
               ),
               tags$p(
                 tags$strong("Home-range scale sigma"),
@@ -928,7 +924,7 @@ ui <- page_fillable(
               ),
               tags$p(
                 tags$strong("Baseline detection rate lambda0"),
-                " is the expected number of detections per occasion if a deer's activity center were at the camera. Larger values produce more detections everywhere in the array."
+                " is the expected number of detections per occasion if an animal's activity center were at the camera. Larger values produce more detections everywhere in the array."
               ),
               tags$p(
                 tags$strong("Random seed"),
@@ -936,7 +932,7 @@ ui <- page_fillable(
               ),
               tags$p(
                 tags$strong("Detection radius r"),
-                " is not used to generate the SECR detections themselves. It is carried into the model-input table and used by the REM/TTE teaching simulators and related plots."
+                " is not used to generate the SECR detections themselves. It is carried into the model-input table used by REM and TTE."
               )
             )
           ),
@@ -949,82 +945,136 @@ ui <- page_fillable(
               plotOutput("grid_plot", height = "420px")
             ),
             column(6,
-              h4("Simulated deer distribution"),
+              h4("Simulated animal distribution"),
               plotOutput("sim_deer_distribution_plot", height = "420px")
             )
           ),
           h3("Camera data table"),
           DTOutput("camera_table"),
-          
-          hr(),
-          h3("REM/TTE teaching simulator"),
-          p(
-            style = "max-width: 54rem;",
-            "This simulator generates model-based per-camera counts for",
-            tags$strong("one method at a time"),
-            ". It is useful for teaching and debugging, but it is not the same as simulating raw image data or animal movement paths."
-          ),
+        ),
+
+        # ------------------- CAMERA ARRAY DESIGN --------------------
+        nav_panel(
+          "Camera array design",
+          markdown(paste(
+            "Design a camera layout for a site from uploaded spatial layers.",
+            "Upload a boundary and any optional exclusion layers, choose spacing and buffer settings, and the app will suggest a camera array you can preview and export.",
+            "",
+            "This first in-app version uses the collaborator workflow as a base, but keeps everything inside the DEER app instead of launching a separate selector app.",
+            sep = "\n"
+          )),
           fluidRow(
-            column(4,
-              selectInput(
-                "teaching_sim_model",
-                "Teaching simulator type",
-                choices = c("REM", "TTE"),
-                selected = "REM"
+            column(
+              4,
+              h3("Step 1: Upload site layers"),
+              p(
+                "Boundary is required. Optional layers can keep cameras away from roads, trails, buildings, parking lots, or other excluded areas."
               ),
-              sliderInput("teach_n_side", "Grid dimension (n x n cameras)",
-                          min = 3, max = 8, value = 5, step = 1),
-              sliderInput("teach_spacing", "Camera spacing (m)",
-                          min = 150, max = 500, value = 300, step = 10),
-              sliderInput("teach_days", "Survey length (days)",
-                          min = 7, max = 60, value = 21, step = 1)
+              fileInput(
+                "camera_boundary_files",
+                "Boundary file(s)",
+                multiple = TRUE,
+                accept = c(".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".kml", ".kmz", ".gpkg")
+              ),
+              fileInput(
+                "camera_roads_files",
+                "Roads layer (optional)",
+                multiple = TRUE,
+                accept = c(".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".kml", ".kmz", ".gpkg")
+              ),
+              fileInput(
+                "camera_trails_files",
+                "Trails layer (optional)",
+                multiple = TRUE,
+                accept = c(".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".kml", ".kmz", ".gpkg")
+              ),
+              fileInput(
+                "camera_buildings_files",
+                "Buildings layer (optional)",
+                multiple = TRUE,
+                accept = c(".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".kml", ".kmz", ".gpkg")
+              ),
+              fileInput(
+                "camera_parking_files",
+                "Parking lots layer (optional)",
+                multiple = TRUE,
+                accept = c(".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".kml", ".kmz", ".gpkg")
+              ),
+              fileInput(
+                "camera_exclusion_files",
+                "Additional exclusion layer(s) (optional)",
+                multiple = TRUE,
+                accept = c(".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".kml", ".kmz", ".gpkg")
+              )
             ),
-            column(4,
-              sliderInput("teach_Dtrue", "True density (deer/km²)",
-                          min = 5, max = 80, value = 25, step = 1),
-              sliderInput("teach_r_m", "Detection radius r (m)",
-                          min = 8, max = 25, value = 12, step = 1),
-              sliderInput("teach_v", "True movement speed v (km/day)",
-                          min = 1, max = 8, value = 4, step = 0.1)
+            column(
+              4,
+              h3("Step 2: Choose layout settings"),
+              textInput("camera_prefix", "Camera name prefix", value = "CAM"),
+              sliderInput(
+                "camera_spacing_m",
+                "Maximum target spacing between nearby cameras (m)",
+                min = 100, max = 600, value = 400, step = 10
+              ),
+              sliderInput(
+                "camera_buffer_m",
+                "Buffer around roads / trails / buildings / parking (m)",
+                min = 0, max = 100, value = 10, step = 1
+              ),
+              numericInput(
+                "camera_budget",
+                "Camera budget (0 = keep all suggested cameras)",
+                value = 0,
+                min = 0,
+                step = 1
+              ),
+              numericInput(
+                "camera_alternates",
+                "Alternate cameras to keep when budget is smaller than the suggested layout",
+                value = 2,
+                min = 0,
+                step = 1
+              ),
+              actionButton("run_camera_array", "Generate camera array", class = "btn-primary")
             ),
-            column(4,
-              sliderInput("teach_sd_eps", "Camera heterogeneity sd_eps",
-                          min = 0, max = 1.5, value = 0.2, step = 0.05),
-              numericInput("teach_seed", "Random seed", value = 101, min = 1),
-              p(class = "small", style = "color: var(--muted);",
-                "Uses the current detection angle θ from ", tags$strong("Model settings"), "."),
-              br(),
-              actionButton("run_teaching_sim", "Simulate REM/TTE teaching data", class = "btn-primary")
-            )
-          ),
-          tags$details(
-            class = "about-card",
-            style = "margin-top: 1rem;",
-            tags$summary(
-              style = "cursor: pointer; font-weight: 600;",
-              "What this simulator is for"
-            ),
-            tags$div(
-              style = "margin-top: 0.85rem;",
-              tags$p(
-                "These teaching simulators generate counts directly from the",
-                tags$strong("REM"),
-                " or ",
-                tags$strong("TTE"),
-                " observation model formulas. They are great for checking that the app can recover a known density when the fitted model matches the data-generating process."
+            column(
+              4,
+              h3("What this produces"),
+              tags$ul(
+                tags$li("A projected design area with optional exclusion buffers removed."),
+                tags$li("Suggested camera points spaced across the allowable area."),
+                tags$li("A final camera set, plus alternates if you enter a smaller budget."),
+                tags$li("Downloadable camera coordinates in latitude/longitude and UTM.")
               ),
               tags$p(
-                "They are",
-                tags$strong("not"),
-                " intended to replace the spatial ",
-                tags$code("secr"),
-                " simulator above, and they are not included in the simulated Compare & combine table."
+                class = "small",
+                style = "color: var(--muted);",
+                "Tip: if the suggested layout is denser than you can deploy, enter your budget and the app will keep a well-spread subset plus optional alternates."
               )
             )
           ),
-          h4("Teaching simulator preview"),
-          verbatimTextOutput("teaching_sim_text"),
-          plotOutput("teaching_sim_plot", height = "360px")
+          hr(),
+          h3("Camera-array log"),
+          verbatimTextOutput("camera_array_log"),
+          fluidRow(
+            column(
+              5,
+              h3("Layout summary"),
+              verbatimTextOutput("camera_array_summary"),
+              downloadButton("download_camera_array_csv", "Download camera CSV"),
+              tags$span(" "),
+              downloadButton("download_camera_array_gpkg", "Download camera GeoPackage"),
+              tags$span(" "),
+              downloadButton("download_camera_area_gpkg", "Download design-area GeoPackage")
+            ),
+            column(
+              7,
+              h3("Camera-array map"),
+              leafletOutput("camera_array_map", height = "520px")
+            )
+          ),
+          h3("Camera coordinates"),
+          DTOutput("camera_array_table")
         ),
         
         # ---------------------- ADD YOUR DATA -------------------------
@@ -1032,7 +1082,7 @@ ui <- page_fillable(
           "Add your data",
           markdown(paste(
             "Upload a **deployment CSV** (where and when cameras were set and recording) and an **images CSV** (timestamps, species, counts, and Cluster IDs).",
-            "The current upload checker expects the TrapTagger / current park-workflow column names listed below.",
+            "The current upload checker expects the exact column names listed below.",
             "",
             sep = "\n"
           )),
@@ -1041,7 +1091,7 @@ ui <- page_fillable(
             "1. Standardize column names, whitespace, and common logical values;",
             "2. Check required columns, data types, matching site names, and deployment/image consistency;",
             "3. Flag image timestamps outside each camera's deployment window (±3 days);",
-            "4. Optionally trim each camera to the first 56 deployed days to match the current park workflow.",
+            "4. Optionally trim images at each camera to the first 56 deployed days to meet the closed-population assumption used by all three models.",
             "",
             "Download processed CSVs if needed, then configure MCMC and priors in the **Model settings** tab and run models in the USCR/REM/TTE tabs.",
             "",
@@ -1049,24 +1099,24 @@ ui <- page_fillable(
             "",
             "## Required data columns",
             "",
-            "### **Deployment file** required columns:",
+            "### Deployment file columns (**bold = required**, others optional for quality control):",
             "",
-            "- **`Park`** — 4-character park code",
             "- **`Site Name`** — Camera site identifier",
-            "- **`Camera ID`** — Camera identifier",
-            "- **`SD Card ID`** — SD card identifier",
+            "- `Site` — Optional site identifier (the app also accepts `Park` for legacy files)",
+            "- `Camera ID` — Optional camera identifier",
+            "- `SD Card ID` — Optional SD card identifier",
             "- **`Start Date`** — Deployment start date (`MM/DD/YYYY`)",
-            "- **`Start Time`** — Deployment start time",
+            "- **`Start Time`** — Deployment start time (`HH:MM:SS` when available)",
             "- **`End Date`** — Deployment end date (`MM/DD/YYYY`)",
-            "- **`End Time`** — Deployment end time",
+            "- **`End Time`** — Deployment end time (`HH:MM:SS` when available)",
             "- **`Latitude`** — Camera latitude (decimal degrees)",
             "- **`Longitude`** — Camera longitude (decimal degrees)",
-            "- **`Camera Height`** — Camera height",
-            "- **`Camera Orientation`** — Cardinal direction or 0-359 degrees",
+            "- `Camera Height` — Optional camera height",
+            "- `Camera Orientation` — Optional cardinal direction or 0-359 degrees",
             "- **`Camera Functioning`** — Camera status; common `Yes/No`, `TRUE/FALSE`, `T/F`, and `1/0` values are normalized during import",
             "- **`Camera Malfunction Date`** — Keep this column in the file; fill it when `Camera Functioning = No` for a site with images",
             "- **`Detection Distance`** — Effective detection radius in meters",
-            "- **`Notes`** — Keep this column even if some rows are blank",
+            "- `Notes` — Optional notes column",
             "",
             "### **Images file** required columns:",
             "",
@@ -1074,12 +1124,13 @@ ui <- page_fillable(
             "- **`Latitude`** — Image/site latitude in decimal degrees",
             "- **`Longitude`** — Image/site longitude in decimal degrees",
             "- **`Timestamp`** — Image timestamp (date and time)",
-            "- **`Species`** — Species identifier (e.g., 'Deer')",
+            "- **`Species`** — Species identifier (e.g., your target species name)",
             "- **`Cluster ID`** — Unique identifier for independent detection events",
             "- **`Sighting Count`** — Number of individuals in the image; pipe-delimited values such as `1|1` are allowed for multi-species rows",
-            "- **`Image URL`** — Image reference/link column required by the current QC pipeline",
+            "- `Image URL` — Optional image reference/link column that can help with later validation",
             "",
             "**Notes:** Deployment QC expects date-only fields in `MM/DD/YYYY`. Image timestamps are parsed more flexibly, including 2-digit years (for example `2/3/25`).",
+            "The app expects the exact column names listed above. TrapTagger exports already use the images-column names expected here, and files from other tagging software can usually be renamed to match.",
             "Cross-year winter surveys (for example `12/2025` to `01/2026`) are supported; the app uses the actual deployment dates/times and image timestamps, so no separate `Survey Year` field is required.",
             sep = "\n"
           )),
@@ -1098,7 +1149,7 @@ ui <- page_fillable(
           fileInput("images_csv", "Upload images CSV", accept = ".csv"),
           checkboxInput(
             "apply_56day_trim",
-            "After validation, trim each camera to the first 56 deployed days (recommended for the current park workflow)",
+            "After validation, trim images at each camera to the first 56 deployed days (recommended for meeting model assumptions). If no data were collected after 56 days, the dataset is left unchanged.",
             value = TRUE
           ),
           h4("Images check log"),
@@ -1111,8 +1162,8 @@ ui <- page_fillable(
           
           h3("Model settings"),
           p(
-            "Configure MCMC iterations, priors, and detection geometry (",
-            tags$strong("r"), ", ", tags$strong("θ"), ") in the ",
+            "Configure MCMC iterations, priors, and detection-angle settings (",
+            tags$strong("θ"), ") in the ",
             tags$strong("Model settings"), " tab."
           )
         ),
@@ -1126,31 +1177,28 @@ ui <- page_fillable(
             "",
             "- **REM/TTE**: 6000 iterations, 1000 burn-in, thin = 5",
             "- **USCR**: 6000 iterations, 1000 burn-in, thin = 5, M = 300",
-            "- **Number of chains**: 1 by default for speed; use more chains when you want stronger convergence diagnostics",
+            "- **Number of chains**: 3 by default; the app enforces a minimum of 3 chains for model runs",
             "- **Convergence criteria**: R̂ < 1.1 for all monitored parameters when multiple chains are used",
             "",
             "USCR now does a short adaptive tuning phase before the final run. If convergence is poor, doubling iterations is usually more helpful than increasing thinning alone. If the posterior `psi` stays high or posterior `N` approaches `M`, increase `M` and rerun.",
             "",
             "### Meta-analysis and pooled priors (not implemented in-app)",
             "",
-            "Each model run uses its own informative priors based on the literature and NPS guidance.",
-            "The app does **not** currently pool information across parks or studies.",
+            "Each model run uses its own informative priors. The current defaults are based on the winter home-range and daily movement literature review used to build this app.",
+            "If you use the app for other species or different field conditions (for example season, biome, or sex-age class), adjust the `sigma` and `v` priors under **Advanced** to reflect your system. If you are unsure, you can widen the priors, but uncertainty in the density estimate will usually increase.",
+            "The app does **not** currently pool information across sites or studies.",
             "If you combine results outside the app, use outputs that keep uncertainty, such as posterior samples or credible intervals, rather than point estimates alone.",
             "",
-            "### Camera geometry (NPS and models)",
+            "### Camera geometry",
             "",
-            "Default detection angle is 55° (Browning-style). Adjust under **Advanced** if you use a different camera or field measurements; the app converts units internally where needed.",
+            "Default detection angle is 55° (based on Browning-style camera specifications). Adjust below if you used a different camera or measured detection angle in the field.",
             "",
             sep = "\n"
           )),
           
           h4("Camera geometry"),
           fluidRow(
-            column(6,
-              sliderInput("r_m", "Detection radius r (m)",
-                          min = 8, max = 25, value = 12, step = 1)
-            ),
-            column(6,
+            column(12,
               sliderInput("theta", "Detection angle θ (degrees)",
                           min = 20, max = 80, value = 55, step = 1)
             )
@@ -1183,7 +1231,7 @@ ui <- page_fillable(
               fluidRow(
                 column(4,
                   numericInput("n_chains", "Number of chains",
-                               value = 1, min = 1, max = 8, step = 1)
+                               value = 3, min = 3, max = 8, step = 1)
                 ),
                 column(4,
                   numericInput("iter_rem_tte", "REM/TTE iterations",
@@ -1221,11 +1269,11 @@ ui <- page_fillable(
                 "**Movement speed is the main informative prior here; the density and heterogeneity bounds are mainly safeguards:**",
                 "",
                 "- **D** ~ Uniform(0, D_max): Upper bound on density, not meant to be strongly informative. If the posterior presses against `D_max`, increase it.",
-                "- **log(v)** ~ Normal(mean, SD): Informative prior on deer movement speed (log scale). Default values came from the deer movement literature and NPS guidance.",
+                "- **log(v)** ~ Normal(mean, SD): Informative prior on animal movement speed (log scale). The current default corresponds to an average winter daily movement rate of `3.09 km/day` with an approximate 95% interval of `1.60` to `6.00 km/day`.",
                 "- **sd_eps** ~ Uniform(0, max): Upper bound on camera-to-camera heterogeneity. If the posterior presses against the maximum, increase the bound.",
                 "",
                 "**Example modifications**:",
-                "- Wider uncertainty in movement speed: log_v ~ Normal(1.339, 0.40)",
+                "- Wider uncertainty in movement speed: log_v ~ Normal(1.130, 0.45)",
                 "- Allowing higher densities: D ~ Uniform(0, 400)",
                 "- Allowing more camera heterogeneity: sd_eps ~ Uniform(0, 20)",
                 "",
@@ -1234,12 +1282,12 @@ ui <- page_fillable(
               
               fluidRow(
                 column(6,
-                  numericInput("D_max", "Max density prior (D max, deer/km²)",
+                  numericInput("D_max", "Max density prior (D max, animals/km²)",
                                value = 200, min = 10, step = 10),
                   numericInput("log_v_mean", "log(v) mean (km/day)",
-                               value = 1.339, step = 0.1),
+                               value = 1.130, step = 0.1),
                   numericInput("log_v_sd", "log(v) SD",
-                               value = 0.2955, min = 0.01, step = 0.05)
+                               value = 0.3372, min = 0.01, step = 0.05)
                 ),
                 column(6,
                   numericInput("sd_eps_max", "sd_eps upper bound",
@@ -1253,13 +1301,13 @@ ui <- page_fillable(
               markdown(paste(
                 "**USCR uses a biologically informative prior on space use plus weaker priors on other terms:**",
                 "",
-                "- **log(σ)** ~ Normal(mean, SD): Informative prior on the space-use scale. The default mean corresponds to about `σ = 0.24 km`, which is consistent with a circular 95% home-range area near `1.1 km²`.",
-                "- **log(λ₀)** ~ Normal(0, SD): Baseline detection intensity. Because `exp(0) = 1`, the default prior is centered near one expected detection per deployed day if a deer's activity center were at the camera.",
+                "- **log(σ)** ~ Normal(mean, SD): Informative prior on the space-use scale. The current default is `log(σ) ~ Normal(-1.5269, 0.1535)`, which corresponds to about `σ = 0.22 km` and is based on an average winter 95% home-range size of `0.89 km²` with an approximate interval of `0.48` to `1.62 km²`.",
+                "- **log(λ₀)** ~ Normal(0, SD): Baseline detection intensity. Because `exp(0) = 1`, the default prior is centered near one expected detection per deployed day if an animal's activity center were at the camera.",
                 "- **psi** ~ Uniform(0, 1): Data-augmentation inclusion probability. This is usually left alone in the app.",
                 "- **sd_eps** ~ Gamma(shape, rate): Camera-level random effect. The app exposes both shape and rate; change these only if you have a specific prior in mind.",
                 "",
                 "**Example modifications**:",
-                "- Looser movement range prior: log_sigma ~ Normal(-1.4442, 0.30)",
+                "- Looser movement range prior: log_sigma ~ Normal(-1.5269, 0.30)",
                 "- Higher uncertainty in baseline detection: log_lam_0 ~ Normal(0, 2)",
                 "- Lighter penalty on large camera effects: sd_eps ~ Gamma(1, 0.5)",
                 "",
@@ -1271,9 +1319,9 @@ ui <- page_fillable(
               fluidRow(
                 column(6,
                   numericInput("log_sigma_mean", "log(σ) mean",
-                               value = -1.4442, step = 0.1),
+                               value = -1.5269, step = 0.1),
                   numericInput("log_sigma_sd", "log(σ) SD",
-                               value = 0.1451, min = 0.01, step = 0.05),
+                               value = 0.1535, min = 0.01, step = 0.05),
                   numericInput("log_lam0_sd", "log(λ₀) SD",
                                value = 1, min = 0.1, step = 0.1)
                 ),
@@ -1292,7 +1340,7 @@ ui <- page_fillable(
             "input.mode == 'Default'",
             tags$div(
               style = "display:none;",
-              numericInput("n_chains", NULL, value = 1),
+              numericInput("n_chains", NULL, value = 3),
               numericInput("iter_rem_tte", NULL, value = 6000),
               numericInput("burnin_rem_tte", NULL, value = 1000),
               numericInput("thin_rem_tte", NULL, value = 5),
@@ -1301,11 +1349,11 @@ ui <- page_fillable(
               numericInput("thin_uscr", NULL, value = 5),
               numericInput("M_uscr", NULL, value = 300),
               numericInput("D_max", NULL, value = 200),
-              numericInput("log_v_mean", NULL, value = 1.339),
-              numericInput("log_v_sd", NULL, value = 0.2955),
+              numericInput("log_v_mean", NULL, value = 1.130),
+              numericInput("log_v_sd", NULL, value = 0.3372),
               numericInput("sd_eps_max", NULL, value = 10),
-              numericInput("log_sigma_mean", NULL, value = -1.4442),
-              numericInput("log_sigma_sd", NULL, value = 0.1451),
+              numericInput("log_sigma_mean", NULL, value = -1.5269),
+              numericInput("log_sigma_sd", NULL, value = 0.1535),
               numericInput("log_lam0_sd", NULL, value = 1),
               numericInput("sd_eps_shape", NULL, value = 1),
               numericInput("sd_eps_rate", NULL, value = 1)
@@ -1342,7 +1390,7 @@ ui <- page_fillable(
             id = "uscr-content",
             HTML('
             <h2>Model 1 — uSCR (Unmarked Spatial Capture–Recapture)</h2>
-            <p><strong>The gist:</strong> Estimates <strong>deer density in the park/state‑space</strong> by learning from <strong>where and when</strong> deer are detected <strong>across a camera array</strong>.</p>
+            <p><strong>The gist:</strong> Estimates <strong>animal density in the site/state‑space</strong> by learning from <strong>where and when</strong> animals are detected <strong>across a camera array</strong>.</p>
             <details>
               <summary style="cursor: pointer; font-weight: 600; margin: 1rem 0; padding: 0.5rem; background: #f0f4e8; border-left: 3px solid #609048; border-radius: 6px;"><strong>Under the hood (equations)</strong></summary>
               <div style="margin: 1rem 0; padding-left: 1rem;">
@@ -1354,9 +1402,9 @@ ui <- page_fillable(
                 <p>Density is obtained from \\(N = \\sum_i z_i\\) divided by the study-area size in mi². With real coordinates, area comes from the buffered camera state-space; on the toy simulator, area comes from the rectangular simulated state-space. The app reports \\(D_{\\mathrm{mi}^2}\\).</p>
                 <h3>Variables</h3>
                 <ul>
-                  <li>\\(y_j\\) — total independent deer detections at camera \\(j\\) across the deployment, built from unique <code>Cluster ID</code> values.</li>
+                  <li>\\(y_j\\) — total independent animal detections at camera \\(j\\) across the deployment, built from unique <code>Cluster ID</code> values.</li>
                   <li>\\(\\mathrm{days}_j\\) — number of deployed days for camera \\(j\\).</li>
-                  <li>\\(\\mu_j\\) — expected number of deer detections at camera \\(j\\) during the deployment.</li>
+                  <li>\\(\\mu_j\\) — expected number of animal detections at camera \\(j\\) during the deployment.</li>
                   <li>\\(\\lambda_0\\) — baseline expected detections per deployed day if an animal\'s activity center were at the camera.</li>
                   <li>\\(\\sigma\\) — spatial scale parameter (km), related to home-range size and how quickly detection falls with distance.</li>
                   <li>\\(d_{ij}\\) — projected distance (km) from augmented individual \\(i\\)\'s activity center to camera \\(j\\).</li>
@@ -1364,11 +1412,11 @@ ui <- page_fillable(
                   <li>\\(z_i\\) — indicator that augmented individual \\(i\\) is part of the real population.</li>
                   <li>\\(\\epsilon_j\\) — camera-level random effect, with \\(\\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)\\).</li>
                   <li>\\(N = \\sum_i z_i\\) — estimated abundance inside the state-space.</li>
-                  <li>\\(D_{\\mathrm{mi}^2}\\) — density, deer per square mile (reported).</li>
+                  <li>\\(D_{\\mathrm{mi}^2}\\) — density, animals per square mile (reported).</li>
                 </ul>
                 <h3>Priors used in the app</h3>
                 <ul>
-                  <li>\\(\\log \\sigma \\sim \\mathcal{N}(-1.4442,\\,0.1451)\\), which anchors \\(\\sigma\\) near 0.24 km.</li>
+                  <li>\\(\\log \\sigma \\sim \\mathcal{N}(-1.5269,\\,0.1535)\\), which anchors \\(\\sigma\\) near 0.22 km.</li>
                   <li>\\(\\log \\lambda_0 \\sim \\mathcal{N}(0,\\,1)\\), centered near one expected detection per day at distance 0.</li>
                   <li>\\(\\psi \\sim \\mathcal{U}(0,1)\\) for data augmentation.</li>
                   <li>\\(sd_\\epsilon \\sim \\mathrm{Gamma}(\\text{shape},\\text{rate})\\), with the default app values set to 1 and 1.</li>
@@ -1443,7 +1491,7 @@ ui <- page_fillable(
             id = "rem-content",
             HTML('
             <h2>Model 2 — REM (Random Encounter Model)</h2>
-            <p><strong>The gist:</strong> Converts <strong>how often deer pass a camera</strong> into density, correcting for <strong>movement speed</strong> and <strong>camera view geometry</strong>.</p>
+            <p><strong>The gist:</strong> Converts <strong>how often animals pass a camera</strong> into density, correcting for <strong>movement speed</strong> and <strong>camera view geometry</strong>.</p>
             <details>
               <summary style="cursor: pointer; font-weight: 600; margin: 1rem 0; padding: 0.5rem; background: #f0f4e8; border-left: 3px solid #609048; border-radius: 6px;"><strong>Under the hood (equations)</strong></summary>
               <div style="margin: 1rem 0; padding-left: 1rem;">
@@ -1453,19 +1501,19 @@ ui <- page_fillable(
                 <p>The app takes the user-entered camera angle in degrees and converts it internally to \\(\\theta_{\\mathrm{rad}} = \\theta_{\\mathrm{deg}}\\pi/180\\). Camera effects follow \\(\\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)\\), and the reported density is \\(D_{\\mathrm{mi}^2} = 2.59\\,D_{\\mathrm{km}^2}\\).</p>
                 <h3>Variables</h3>
                 <ul>
-                  <li>\\(y_j\\) — number of independent deer detection events at camera \\(j\\) (unique <code>Cluster ID</code>).</li>
+                  <li>\\(y_j\\) — number of independent animal detection events at camera \\(j\\) (unique <code>Cluster ID</code>).</li>
                   <li>\\(\\mathrm{camera\\_days}_j\\) — deployed days for camera \\(j\\).</li>
-                  <li>\\(D\\) — deer density in deer/km² before converting to deer/mi² for display.</li>
-                  <li>\\(v\\) — deer movement speed (km/day).</li>
+                  <li>\\(D\\) — animal density in animals/km² before converting to animals/mi² for display.</li>
+                  <li>\\(v\\) — animal movement speed (km/day).</li>
                   <li>\\(r_j\\) — effective detection radius in km; the app converts meters from <code>Detection Distance</code> to km.</li>
                   <li>\\(\\theta_{\\mathrm{deg}}\\) — full detection angle supplied by the user (default \\(55^\\circ\\)); converted internally to radians.</li>
                   <li>\\(\\epsilon_j\\) — camera-level random effect, with \\(\\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)\\).</li>
-                  <li>\\(D_{\\mathrm{km}^2}, D_{\\mathrm{mi}^2}\\) — density in deer/km² and deer/mi² (reported in mi²).</li>
+                  <li>\\(D_{\\mathrm{km}^2}, D_{\\mathrm{mi}^2}\\) — density in animals/km² and animals/mi² (reported in mi²).</li>
                 </ul>
                 <h3>Priors/inputs used in the app</h3>
                 <ul>
                   <li>\\(D \\sim \\mathcal{U}(0, D_{\\max})\\), which acts as an upper bound rather than a strongly informative prior.</li>
-                  <li>\\(\\log v \\sim \\mathcal{N}(1.339,\\,0.2955)\\), an informative deer movement prior.</li>
+                  <li>\\(\\log v \\sim \\mathcal{N}(1.130,\\,0.3372)\\), an informative movement prior that currently uses the app winter default values.</li>
                   <li>\\(\\theta_{\\mathrm{deg}} = 55^\\circ\\) by default, and cameras are assumed to be randomly placed and unbaited.</li>
                   <li>\\(sd_\\epsilon \\sim \\mathcal{U}(0, 10)\\), an upper bound on camera heterogeneity.</li>
                 </ul>
@@ -1506,9 +1554,9 @@ ui <- page_fillable(
           h4("Simulated data"),
           p(
             style = "max-width: 52rem;",
-            "REM can run on the",
-            tags$strong("REM teaching simulator"),
-            "from the Simulate data tab. Generate REM teaching data first; this is a model-based teaching workflow, not the uploaded-data pipeline."
+            "REM runs on the",
+            tags$strong("shared spatial simulator"),
+            " generated in the Simulate data tab, so it can be compared and combined with simulated USCR and TTE."
           ),
           div(
             actionButton("run_rem_sim", "Run REM on simulated data", class = "btn-primary"),
@@ -1528,7 +1576,7 @@ ui <- page_fillable(
           ),
           p(
             style = "max-width: 52rem; color: var(--muted); margin-bottom: 0.75rem;",
-            "Server note: uploaded-data REM runs now start in a background worker so other sessions can keep using the app. For concurrency safety this path uses one MCMC chain on the server, even if the UI chain setting is higher. The Stop button cannot cancel an already-started background REM job yet."
+            "Server note: uploaded-data REM runs still start in a background worker so other sessions can keep using the app. This path now honors the app minimum of 3 chains, so server runs may take longer than before. The Stop button cannot cancel an already-started background REM job yet."
           ),
           br(),
           verbatimTextOutput("rem_nps_text"),
@@ -1548,7 +1596,7 @@ ui <- page_fillable(
             id = "tte-content",
             HTML('
             <h2>Model 3 — TTE (Time‑to‑Event)</h2>
-            <p><strong>The gist:</strong> Uses <strong>deer detection events per camera</strong>, scaled by <strong>movement-based time units</strong> and the <strong>viewshed area</strong>. Shorter effective time between encounters implies higher density.</p>
+            <p><strong>The gist:</strong> Uses <strong>animal detection events per camera</strong>, scaled by <strong>movement-based time units</strong> and the <strong>viewshed area</strong>. Shorter effective time between encounters implies higher density.</p>
             <details>
               <summary style="cursor: pointer; font-weight: 600; margin: 1rem 0; padding: 0.5rem; background: #f0f4e8; border-left: 3px solid #609048; border-radius: 6px;"><strong>Under the hood (equations)</strong></summary>
               <div style="margin: 1rem 0; padding-left: 1rem;">
@@ -1560,7 +1608,7 @@ ui <- page_fillable(
                 <p>Here \\(r_j\\) is in km and \\(\\theta_{\\mathrm{deg}}\\) is the user-entered detection angle in degrees. The app reports \\(D_{\\mathrm{mi}^2} = 2.59\\,D_{\\mathrm{km}^2}\\).</p>
                 <h3>Variables</h3>
                 <ul>
-                  <li>\\(y_j\\) — number of deer detection events for camera \\(j\\) in the current app workflow.</li>
+                  <li>\\(y_j\\) — number of animal detection events for camera \\(j\\) in the current app workflow.</li>
                   <li>\\(\\mathrm{camera\\_days}_j\\) — total deployed days for camera \\(j\\) from <code>Start/End</code>.</li>
                   <li>\\(\\mathrm{time\\_unit}\\) — expected time to traverse the viewshed once; \\(\\approx 0.59\\,r_j/v\\) (days).</li>
                   <li>\\(v\\) — movement speed (km/day); prior on \\(\\log v\\) as below.</li>
@@ -1568,12 +1616,12 @@ ui <- page_fillable(
                   <li>\\(\\theta_{\\mathrm{deg}}\\) — full detection angle supplied by the user (default \\(55^\\circ\\)).</li>
                   <li>\\(A_j\\) — viewshed area for camera \\(j\\) (km²).</li>
                   <li>\\(\\epsilon_j\\) — camera-level random effect, with \\(\\epsilon_j \\sim \\mathcal{N}(0, sd_\\epsilon)\\).</li>
-                  <li>\\(D_{\\mathrm{mi}^2}\\) — density (deer/mi²), reported.</li>
+                  <li>\\(D_{\\mathrm{mi}^2}\\) — density (animals/mi²), reported.</li>
                 </ul>
                 <h3>Priors/inputs used in the app</h3>
                 <ul>
                   <li>\\(D \\sim \\mathcal{U}(0, D_{\\max})\\), which acts as an upper bound rather than a strongly informative prior.</li>
-                  <li>\\(\\log v \\sim \\mathcal{N}(1.339,\\,0.2955)\\), which calibrates the movement-based time unit.</li>
+                  <li>\\(\\log v \\sim \\mathcal{N}(1.130,\\,0.3372)\\), which calibrates the movement-based time unit.</li>
                   <li>\\(\\theta_{\\mathrm{deg}} = 55^\\circ\\) by default, with \\(r_j\\) taken from field-measured <code>Detection Distance</code>.</li>
                   <li>\\(sd_\\epsilon \\sim \\mathcal{U}(0, 10)\\), an upper bound on camera heterogeneity.</li>
                 </ul>
@@ -1614,9 +1662,9 @@ ui <- page_fillable(
           h4("Simulated data"),
           p(
             style = "max-width: 52rem;",
-            "TTE can run on the",
-            tags$strong("TTE teaching simulator"),
-            "from the Simulate data tab. Generate TTE teaching data first; this is a model-based teaching workflow, not the uploaded-data pipeline."
+            "TTE runs on the",
+            tags$strong("shared spatial simulator"),
+            " generated in the Simulate data tab, so it can be compared and combined with simulated USCR and REM."
           ),
           div(
             actionButton("run_tte_sim", "Run TTE on simulated data", class = "btn-primary"),
@@ -1652,24 +1700,23 @@ ui <- page_fillable(
             "**Uploaded field data:** the table updates as REM, TTE, and USCR finish. If only some models have completed, the table will still summarize the completed fits.",
             "",
             "1. Compute ΔWAIC and WAIC weights when multiple models are available;",
-            "2. Combine posterior draws of `D_mi²` (deer per square mile) across the completed fits;",
+            "2. Combine posterior draws of `D_mi²` (animals per square mile) across the completed fits;",
             "3. Report model-specific densities, and when possible also report unweighted and WAIC-weighted summaries plus P(D > 20 DPSM).",
             "",
-            "**Simulated data:** the table below remains the **USCR spatial simulator** summary only (not a three‑model average).",
-            "Standalone REM/TTE teaching-simulator runs are shown in their model tabs and are intentionally excluded here.",
+            "**Simulated data:** if you run USCR, REM, and TTE from the **shared spatial simulator**, the table below will compare and combine those completed simulated fits too.",
             "",
             "Run the models from their tabs first, then check the tables.",
             sep = "\n"
           )),
           
-          h4("Simulated data – USCR density summary (deer/mi²)"),
+          h4("Simulated data – shared spatial simulator comparison (animals/mi²)"),
           DTOutput("sim_combo_table"),
           p(class = "small", style = "color: var(--muted);",
-            "REM/TTE teaching-simulator runs are available in their own tabs, but they are not combined in this table."),
-          downloadButton("dl_sim_uscr_csv", "Download simulated USCR posterior summary (CSV)"),
+            "Only fits from the current shared spatial simulator are combined here."),
+          downloadButton("dl_sim_uscr_csv", "Download available shared-simulation posterior summaries (CSV)"),
           
           hr(),
-          h4("Uploaded field data – model comparison and combined results (deer/mi²)"),
+          h4("Uploaded field data – model comparison and combined results (animals/mi²)"),
           DTOutput("nps_combo_table"),
           p("Posterior summaries (all monitored parameters, mean, 95% CI) for each completed model:"),
           downloadButton("dl_nps_all_csv", "Download available uploaded-data posterior summaries (CSV)")
@@ -1711,19 +1758,15 @@ server <- function(input, output, session) {
     )
   })
   
-  teaching_sim <- eventReactive(input$run_teaching_sim, {
-    simulate_teaching_counts(
-      model = input$teaching_sim_model,
-      n_side = input$teach_n_side,
-      spacing_m = input$teach_spacing,
-      days = input$teach_days,
-      D_per_km2 = input$teach_Dtrue,
-      detection_radius_m = input$teach_r_m,
-      theta_deg = input$theta,
-      v_km_day = input$teach_v,
-      sd_eps = input$teach_sd_eps,
-      seed = input$teach_seed
-    )
+  observeEvent(input$run_sim, {
+    sim_id <- paste0("shared_sim_", format(Sys.time(), "%Y%m%d%H%M%S"))
+    current_shared_sim_id(sim_id)
+    uscr_sim_fit(NULL)
+    rem_sim_fit(NULL)
+    tte_sim_fit(NULL)
+    uscr_sim_dataset_id(NULL)
+    rem_sim_dataset_id(NULL)
+    tte_sim_dataset_id(NULL)
   }, ignoreInit = TRUE)
   
   output$grid_plot <- renderPlot({
@@ -1751,7 +1794,7 @@ server <- function(input, output, session) {
       labs(
         x = "m", y = "m",
         title = sprintf(
-          "%d cameras, spacing %dm (simulated density: %.1f deer/km²)",
+          "%d cameras, spacing %dm (simulated density: %.1f animals/km²)",
           sim()$truth$n_cams,
           sim()$truth$spacing_m,
           sim()$truth$D_per_km2
@@ -1768,15 +1811,15 @@ server <- function(input, output, session) {
       mutate(
         x = utm_e * 1000,  # Convert km to m for consistency with grid plot
         y = utm_n * 1000,
-        total_deer = d$camera_counts
+        total_animals = d$camera_counts
       )
     
-    td_max <- max(deer_dist$total_deer, na.rm = TRUE)
+    td_max <- max(deer_dist$total_animals, na.rm = TRUE)
     size_breaks <- pretty(c(0, max(1, td_max)), n = 4)
     size_breaks <- unique(size_breaks[size_breaks >= 0 & size_breaks <= max(1, td_max)])
     ggplot(deer_dist, aes(x = x, y = y)) +
       geom_point(
-        aes(size = total_deer),
+        aes(size = total_animals),
         shape = 21,
         fill = redwood_colors[3],
         color = redwood_colors[1],
@@ -1793,13 +1836,13 @@ server <- function(input, output, session) {
         point.padding = 0.2
       ) +
       scale_size_area(
-        name   = "Total deer",
+        name   = "Total detections",
         max_size = 14,
         breaks = size_breaks
       ) +
       coord_equal() +
       labs(
-        title = "Total Deer Detections by Camera",
+        title = "Total Animal Detections by Camera",
         x = "m",
         y = "m"
       ) +
@@ -1822,79 +1865,317 @@ server <- function(input, output, session) {
       datatable(options = list(pageLength = 8))
   })
   
-  output$teaching_sim_text <- renderPrint({
-    sim_obj <- teaching_sim()
-    if (is.null(sim_obj)) {
-      cat("No REM/TTE teaching simulator data yet. Generate one from the Simulate data tab.")
-      return(invisible(NULL))
+  # ================================================================
+  # CAMERA ARRAY DESIGN
+  # ================================================================
+
+  camera_array_result <- reactiveVal(NULL)
+  camera_array_log <- reactiveVal("No camera array has been generated yet.")
+
+  observeEvent(input$run_camera_array, {
+    req(input$camera_boundary_files)
+
+    log_lines <- character()
+    add_log <- function(...) {
+      log_lines <<- c(log_lines, paste0(...))
+      camera_array_log(paste(log_lines, collapse = "\n"))
     }
-    
-    truth <- sim_obj$truth
-    list(
-      simulator_type = paste(sim_obj$model, "teaching simulator"),
-      note = "Model-based teaching simulator only; not included in simulated Compare & combine.",
-      cameras = truth$n_cams,
-      spacing_m = truth$spacing_m,
-      survey_days = truth$days,
-      true_density_deer_per_km2 = round(truth$D_per_km2, 2),
-      true_density_deer_per_mi2 = round(truth$D_per_mi2, 2),
-      detection_radius_m = truth$detection_radius_m,
-      theta_deg = truth$theta_deg,
-      true_movement_speed_km_per_day = round(truth$v_km_day, 2),
-      true_sd_eps = round(truth$sd_eps, 2),
-      mean_expected_counts_per_camera = round(truth$mean_lambda, 2),
-      total_observed_counts = truth$total_observed
+
+    camera_array_result(NULL)
+    camera_array_log("Starting camera-array generation...")
+
+    res <- tryCatch(
+      {
+        withProgress(
+          message = "Generating camera array",
+          detail = "Reading uploaded spatial layers...",
+          value = 0,
+          {
+            add_log("Reading boundary file(s)...")
+            boundary_sf <- read_uploaded_spatial_group(
+              input$camera_boundary_files,
+              label = "boundary",
+              required = TRUE
+            )
+
+            setProgress(0.15, detail = "Reading optional layers...")
+            roads_sf <- read_uploaded_spatial_group(input$camera_roads_files, "roads layer")
+            trails_sf <- read_uploaded_spatial_group(input$camera_trails_files, "trails layer")
+            buildings_sf <- read_uploaded_spatial_group(input$camera_buildings_files, "buildings layer")
+            parking_sf <- read_uploaded_spatial_group(input$camera_parking_files, "parking layer")
+            exclusion_sf <- read_uploaded_spatial_group(input$camera_exclusion_files, "exclusion layer")
+
+            add_log("Boundary loaded successfully.")
+            optional_counts <- c(
+              roads = if (is.null(roads_sf)) 0 else nrow(roads_sf),
+              trails = if (is.null(trails_sf)) 0 else nrow(trails_sf),
+              buildings = if (is.null(buildings_sf)) 0 else nrow(buildings_sf),
+              parking = if (is.null(parking_sf)) 0 else nrow(parking_sf),
+              exclusions = if (is.null(exclusion_sf)) 0 else nrow(exclusion_sf)
+            )
+            add_log(
+              "Optional layer features loaded: ",
+              paste(names(optional_counts), optional_counts, sep = "=", collapse = ", ")
+            )
+
+            setProgress(0.4, detail = "Building allowable camera area...")
+            design_area <- build_camera_design_area(
+              boundary_sf = boundary_sf,
+              roads = roads_sf,
+              trails = trails_sf,
+              buildings = buildings_sf,
+              parking_lots = parking_sf,
+              exclusion_areas = exclusion_sf,
+              buffer_dist_m = input$camera_buffer_m
+            )
+
+            boundary_area_ha <- as.numeric(sum(sf::st_area(design_area$boundary))) / 10000
+            allowed_area_ha <- as.numeric(sum(sf::st_area(design_area$allowed_area))) / 10000
+            excluded_area_ha <- if (!is.null(design_area$excluded_area) && nrow(design_area$excluded_area)) {
+              as.numeric(sum(sf::st_area(design_area$excluded_area))) / 10000
+            } else {
+              0
+            }
+
+            add_log("Projected design area created.")
+            add_log("Boundary area: ", format_num(boundary_area_ha, 1), " ha")
+            add_log("Allowable camera area: ", format_num(allowed_area_ha, 1), " ha")
+            if (excluded_area_ha > 0) {
+              add_log("Excluded / buffered area removed: ", format_num(excluded_area_ha, 1), " ha")
+            }
+
+            setProgress(0.7, detail = "Generating candidate camera locations...")
+            prefix <- trimws(input$camera_prefix)
+            if (!nzchar(prefix)) prefix <- "CAM"
+
+            candidates <- generate_camera_candidates(
+              allowed_area = design_area$allowed_area,
+              spacing_m = input$camera_spacing_m,
+              camera_prefix = prefix
+            )
+            selected <- select_camera_subset(
+              candidates_sf = candidates,
+              budget = input$camera_budget,
+              n_alternates = input$camera_alternates
+            )
+
+            add_log("Suggested camera candidates: ", nrow(candidates))
+            add_log(
+              "Final cameras retained: ",
+              sum(selected$status == "final"),
+              if (any(selected$status == "alternate")) {
+                paste0(" (plus ", sum(selected$status == "alternate"), " alternates)")
+              } else {
+                ""
+              }
+            )
+
+            setProgress(0.9, detail = "Preparing exports and map outputs...")
+            candidates_export <- camera_points_for_export(candidates)
+            selected_export <- camera_points_for_export(selected)
+
+            list(
+              boundary = design_area$boundary,
+              allowed_area = design_area$allowed_area,
+              excluded_area = design_area$excluded_area,
+              candidates = candidates_export,
+              selected = selected_export,
+              summary = list(
+                spacing_m = input$camera_spacing_m,
+                buffer_m = input$camera_buffer_m,
+                budget = input$camera_budget,
+                alternates = input$camera_alternates,
+                boundary_area_ha = boundary_area_ha,
+                allowed_area_ha = allowed_area_ha,
+                excluded_area_ha = excluded_area_ha
+              )
+            )
+          }
+        )
+      },
+      error = function(e) {
+        add_log("ERROR: ", e$message)
+        showNotification(
+          paste("Camera array design failed:", e$message),
+          type = "error",
+          duration = NULL
+        )
+        NULL
+      }
+    )
+
+    if (!is.null(res)) {
+      camera_array_result(res)
+      add_log("Camera-array design completed successfully.")
+      showNotification("Camera array generated successfully.", type = "message", duration = 6)
+    }
+  })
+
+  output$camera_array_log <- renderText({
+    camera_array_log()
+  })
+
+  output$camera_array_summary <- renderText({
+    res <- camera_array_result()
+    if (is.null(res)) {
+      return("No camera array has been generated yet.")
+    }
+
+    summary <- res$summary
+    selected <- res$selected
+
+    paste(
+      c(
+        paste("Suggested spacing:", summary$spacing_m, "m"),
+        paste("Buffer around optional layers:", summary$buffer_m, "m"),
+        paste("Boundary area:", format_num(summary$boundary_area_ha, 1), "ha"),
+        paste("Allowable area:", format_num(summary$allowed_area_ha, 1), "ha"),
+        paste("Candidates generated:", nrow(res$candidates)),
+        paste("Final cameras:", sum(selected$status == "final")),
+        paste("Alternate cameras:", sum(selected$status == "alternate"))
+      ),
+      collapse = "\n"
     )
   })
-  
-  output$teaching_sim_plot <- renderPlot({
-    sim_obj <- teaching_sim()
-    req(sim_obj)
-    
-    plot_df <- sim_obj$out %>%
-      dplyr::mutate(
-        x = utm_e * 1000,
-        y = utm_n * 1000,
-        total_counts = sim_obj$camera_counts
-      )
-    
-    count_max <- max(plot_df$total_counts, na.rm = TRUE)
-    size_breaks <- pretty(c(0, max(1, count_max)), n = 4)
-    size_breaks <- unique(size_breaks[size_breaks >= 0 & size_breaks <= max(1, count_max)])
-    
-    ggplot(plot_df, aes(x = x, y = y)) +
-      geom_point(
-        aes(size = total_counts),
-        shape = 21,
-        fill = redwood_colors[4],
+
+  output$camera_array_map <- renderLeaflet({
+    res <- camera_array_result()
+    req(res)
+
+    boundary_ll <- sf::st_transform(res$boundary, 4326)
+    allowed_ll <- sf::st_transform(res$allowed_area, 4326)
+    excluded_ll <- if (!is.null(res$excluded_area) && nrow(res$excluded_area)) {
+      sf::st_transform(res$excluded_area, 4326)
+    } else {
+      NULL
+    }
+    candidates_ll <- sf::st_transform(res$candidates, 4326)
+    selected_ll <- sf::st_transform(res$selected, 4326)
+
+    m <- leaflet() |>
+      addTiles() |>
+      addPolygons(
+        data = boundary_ll,
         color = redwood_colors[1],
-        stroke = 0.35,
-        alpha = 0.8
-      ) +
-      ggrepel::geom_label_repel(
-        aes(label = Site),
-        size = 3,
-        max.overlaps = Inf,
-        fill = "white",
-        label.size = 0.2,
-        box.padding = 0.25,
-        point.padding = 0.2
-      ) +
-      scale_size_area(
-        name = "Counts",
-        max_size = 14,
-        breaks = size_breaks
-      ) +
-      coord_equal() +
-      labs(
-        title = paste(sim_obj$model, "teaching simulator counts by camera"),
-        subtitle = "Synthetic counts generated directly from the fitted model formula",
-        x = "m",
-        y = "m"
-      ) +
-      theme_minimal() +
-      theme(legend.position = "right")
+        weight = 2,
+        fill = FALSE,
+        group = "Boundary"
+      ) |>
+      addPolygons(
+        data = allowed_ll,
+        color = redwood_colors[3],
+        weight = 1,
+        fillColor = redwood_colors[4],
+        fillOpacity = 0.2,
+        group = "Allowed area"
+      ) |>
+      addCircleMarkers(
+        data = candidates_ll,
+        radius = 3,
+        color = "#666666",
+        stroke = FALSE,
+        fillOpacity = 0.7,
+        group = "Candidates",
+        popup = ~paste0("<strong>", camera_id, "</strong>")
+      )
+
+    if (!is.null(excluded_ll)) {
+      m <- m |>
+        addPolygons(
+          data = excluded_ll,
+          color = "#8b5a2b",
+          weight = 1,
+          fillColor = "#c59d74",
+          fillOpacity = 0.3,
+          group = "Excluded area"
+        )
+    }
+
+    final_pts <- selected_ll[selected_ll$status == "final", , drop = FALSE]
+    alt_pts <- selected_ll[selected_ll$status == "alternate", , drop = FALSE]
+
+    if (nrow(final_pts)) {
+      m <- m |>
+        addCircleMarkers(
+          data = final_pts,
+          radius = 6,
+          color = redwood_colors[3],
+          fillColor = redwood_colors[3],
+          fillOpacity = 1,
+          weight = 1,
+          group = "Final cameras",
+          popup = ~paste0("<strong>", camera_id, "</strong><br>Status: final")
+        )
+    }
+
+    if (nrow(alt_pts)) {
+      m <- m |>
+        addCircleMarkers(
+          data = alt_pts,
+          radius = 6,
+          color = "#d97904",
+          fillColor = "#f4b266",
+          fillOpacity = 1,
+          weight = 1,
+          group = "Alternates",
+          popup = ~paste0("<strong>", camera_id, "</strong><br>Status: alternate")
+        )
+    }
+
+    m |>
+      addLayersControl(
+        overlayGroups = c("Boundary", "Allowed area", "Excluded area", "Candidates", "Final cameras", "Alternates"),
+        options = layersControlOptions(collapsed = FALSE)
+      )
   })
+
+  output$camera_array_table <- DT::renderDT({
+    res <- camera_array_result()
+    req(res)
+
+    export_df <- res$selected |>
+      sf::st_drop_geometry() |>
+      dplyr::select(camera_id, status, longitude, latitude, utm_easting_m, utm_northing_m)
+
+    DT::datatable(export_df, options = list(pageLength = 10))
+  })
+
+  output$download_camera_array_csv <- downloadHandler(
+    filename = function() {
+      paste0("camera_array_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      res <- camera_array_result()
+      req(res)
+      readr::write_csv(sf::st_drop_geometry(res$selected), file)
+    }
+  )
+
+  output$download_camera_array_gpkg <- downloadHandler(
+    filename = function() {
+      paste0("camera_array_", Sys.Date(), ".gpkg")
+    },
+    content = function(file) {
+      res <- camera_array_result()
+      req(res)
+      sf::st_write(res$selected, file, layer = "camera_points", delete_dsn = TRUE, quiet = TRUE)
+    }
+  )
+
+  output$download_camera_area_gpkg <- downloadHandler(
+    filename = function() {
+      paste0("camera_design_area_", Sys.Date(), ".gpkg")
+    },
+    content = function(file) {
+      res <- camera_array_result()
+      req(res)
+      sf::st_write(res$boundary, file, layer = "boundary", delete_dsn = TRUE, quiet = TRUE)
+      sf::st_write(res$allowed_area, file, layer = "allowed_area", append = TRUE, quiet = TRUE)
+      if (!is.null(res$excluded_area) && nrow(res$excluded_area)) {
+        sf::st_write(res$excluded_area, file, layer = "excluded_area", append = TRUE, quiet = TRUE)
+      }
+    }
+  )
   
   # ================================================================
   # NPS QC: deployment + images
@@ -2331,6 +2612,10 @@ server <- function(input, output, session) {
   uscr_sim_fit <- reactiveVal(NULL)
   rem_sim_fit  <- reactiveVal(NULL)
   tte_sim_fit  <- reactiveVal(NULL)
+  current_shared_sim_id <- reactiveVal(NULL)
+  uscr_sim_dataset_id <- reactiveVal(NULL)
+  rem_sim_dataset_id  <- reactiveVal(NULL)
+  tte_sim_dataset_id  <- reactiveVal(NULL)
 
   uscr_nps_fit <- reactiveVal(NULL)
   rem_nps_fit  <- reactiveVal(NULL)
@@ -2402,7 +2687,7 @@ server <- function(input, output, session) {
     
     lines <- c(
       paste("Cameras:", nrow(d$out)),
-      paste("Total deer events:", sum(d$camera_counts, na.rm = TRUE)),
+      paste("Total animal events:", sum(d$camera_counts, na.rm = TRUE)),
       paste("Total camera-days:", format_num(sum(d$camera_days, na.rm = TRUE), 1)),
       paste("Detection distance range:", det_dist),
       if (source_label == "NPS") {
@@ -2410,11 +2695,11 @@ server <- function(input, output, session) {
       } else {
         "Supported sources here: simulated grid data and uploaded NPS data."
       },
-      "Preprocessing: total deer events per camera, camera-days, and buffered spatial state space."
+      "Preprocessing: total animal events per camera, camera-days, and buffered spatial state space."
     )
     
     if (!is.null(sim_truth)) {
-      lines <- c(lines, paste("True simulated density:", format_num(sim_truth$D_per_km2, 1), "deer/km^2"))
+      lines <- c(lines, paste("True simulated density:", format_num(sim_truth$D_per_km2, 1), "animals/km^2"))
     }
     
     lines
@@ -2423,7 +2708,7 @@ server <- function(input, output, session) {
   summarize_rem_context <- function(d) {
     c(
       paste("Cameras:", nrow(d$out)),
-      paste("Total deer events:", sum(d$camera_counts, na.rm = TRUE)),
+      paste("Total animal events:", sum(d$camera_counts, na.rm = TRUE)),
       paste("Total camera-days:", format_num(sum(d$camera_days, na.rm = TRUE), 1)),
       paste(
         "Detection distance range:",
@@ -2435,14 +2720,14 @@ server <- function(input, output, session) {
         )
       ),
       "Supported sources here: uploaded NPS data only.",
-      "Preprocessing: REM uses total deer events per camera and camera-days."
+      "Preprocessing: REM uses total animal events per camera and camera-days."
     )
   }
   
   summarize_tte_context <- function(d) {
     c(
       paste("Cameras:", nrow(d$out)),
-      paste("Total deer events passed to TTE:", sum(d$camera_counts, na.rm = TRUE)),
+      paste("Total animal events passed to TTE:", sum(d$camera_counts, na.rm = TRUE)),
       paste("Total camera-days:", format_num(sum(d$camera_days, na.rm = TRUE), 1)),
       paste(
         "Detection distance range:",
@@ -2454,38 +2739,16 @@ server <- function(input, output, session) {
         )
       ),
       "Supported sources here: uploaded NPS data only.",
-      "Current app preprocessing: TTE is receiving total deer events per camera and camera-days."
+      "Current app preprocessing: TTE is receiving total animal events per camera and camera-days."
     )
   }
   
-  summarize_teaching_sim_context <- function(d) {
-    lines <- c(
-      paste("Teaching simulator type:", d$model),
-      paste("Cameras:", nrow(d$out)),
-      paste("Total simulated deer events:", sum(d$camera_counts, na.rm = TRUE)),
-      paste("Total camera-days:", format_num(sum(d$camera_days, na.rm = TRUE), 1)),
-      paste(
-        "Detection distance range:",
-        paste0(
-          format_num(min(d$out$`Detection Distance`, na.rm = TRUE), 1),
-          " to ",
-          format_num(max(d$out$`Detection Distance`, na.rm = TRUE), 1),
-          " m"
-        )
-      ),
-      "Supported sources here: matching REM/TTE teaching simulator only.",
-      "These simulated counts come directly from the selected model formula and are not included in simulated Compare & combine."
+  summarize_shared_sim_context <- function(d, model_label, sim_truth = NULL) {
+    c(
+      paste("Shared simulator model fit:", model_label),
+      summarize_uscr_context(d, source_label = "Simulated", sim_truth = sim_truth),
+      "This fit comes from the shared spatial simulator and is eligible for simulated Compare & combine."
     )
-    
-    if (!is.null(d$truth)) {
-      lines <- c(
-        lines,
-        paste("True simulated density:", format_num(d$truth$D_per_km2, 1), "deer/km^2"),
-        paste("True movement speed:", format_num(d$truth$v_km_day, 2), "km/day")
-      )
-    }
-    
-    lines
   }
   
   friendly_model_error <- function(model, data_source, error_text) {
@@ -2517,13 +2780,42 @@ server <- function(input, output, session) {
       tips <- c(tips, "USCR does an adaptive tuning run before the final run. If it is too slow for testing, reduce chains, iterations, or M.")
     }
     if (identical(model, "REM")) {
-      tips <- c(tips, "REM expects per-camera deer events, camera-days, and detection distances.")
+      tips <- c(tips, "REM expects per-camera animal events, camera-days, and detection distances.")
+      tips <- c(tips, "REM now doubles iterations automatically until the maximum Rhat is acceptable, so longer runs can be expected when convergence is slow.")
     }
     if (identical(model, "TTE")) {
-      tips <- c(tips, "TTE expects per-camera deer events, camera-days, and detection distances. The current build passes total deer events per camera to TTE.")
+      tips <- c(tips, "TTE expects per-camera animal events, camera-days, and detection distances. The current build passes total animal events per camera to TTE.")
+      tips <- c(tips, "TTE now doubles iterations automatically until the maximum Rhat is acceptable, so longer runs can be expected when convergence is slow.")
     }
     
     paste(tips, collapse = "\n")
+  }
+
+  make_encounter_status_callback <- function(rv, model_label, set_progress = NULL) {
+    function(stage, detail = NULL, value = NULL) {
+      stage_label <- switch(
+        stage,
+        setup = "Preparing model code",
+        tuning = "Adaptive tuning / convergence checks",
+        final_run = "Final MCMC run",
+        stage
+      )
+
+      if (is.function(set_progress)) {
+        progress_detail <- detail %||% stage_label
+        if (!is.null(value)) {
+          set_progress(value = value, detail = progress_detail)
+        } else {
+          set_progress(detail = progress_detail)
+        }
+      }
+
+      update_model_debug(
+        rv,
+        stage = stage_label,
+        log_entry = detail %||% paste(model_label, "stage:", stage_label)
+      )
+    }
   }
   
   format_model_debug <- function(state, fit = NULL) {
@@ -2554,38 +2846,44 @@ server <- function(input, output, session) {
     }
     
     if (!is.null(fit) && !is.null(fit$settings)) {
-      lines <- c(
-        lines,
-        "",
-        "Run settings used:",
-        paste0("- Final M: ", fit$settings$M),
+      setting_lines <- c(
         paste0("- Final iterations: ", fit$settings$iter),
         paste0("- Burn-in: ", fit$settings$burnin),
         paste0("- Thin: ", fit$settings$thin),
         paste0("- Chains: ", fit$settings$n_chains)
       )
+      if (!is.null(fit$settings$M)) {
+        setting_lines <- c(paste0("- Final M: ", fit$settings$M), setting_lines)
+      }
+      lines <- c(lines, "", "Run settings used:", setting_lines)
       if (!is.null(fit$final_rhat_max) && is.finite(fit$final_rhat_max)) {
         lines <- c(lines, paste0("- Final max Rhat: ", format_num(fit$final_rhat_max, 3)))
       }
     }
     
     if (!is.null(fit) && !is.null(fit$tuning_history) && nrow(fit$tuning_history) > 0) {
+      tuning_df <- fit$tuning_history
       tuning_lines <- apply(
-        fit$tuning_history,
+        tuning_df,
         1,
         function(row) {
-          paste0(
-            "round ", row[["round"]],
-            ": M=", row[["M"]],
-            ", iter=", row[["niter"]],
-            ", thin=", row[["thin"]],
-            ", chains=", row[["n_chains"]],
-            ", rhat=", format_num(as.numeric(row[["rhat_max"]]), 3),
-            ", M_too_small=", row[["M_too_small"]]
+          parts <- c(
+            paste0("round ", row[["round"]]),
+            paste0("iter=", row[["niter"]]),
+            paste0("thin=", row[["thin"]]),
+            paste0("chains=", row[["n_chains"]]),
+            paste0("rhat=", format_num(as.numeric(row[["rhat_max"]]), 3))
           )
+          if ("M" %in% names(tuning_df)) {
+            parts <- append(parts, paste0("M=", row[["M"]]), after = 1)
+          }
+          if ("M_too_small" %in% names(tuning_df)) {
+            parts <- c(parts, paste0("M_too_small=", row[["M_too_small"]]))
+          }
+          paste(parts, collapse = ", ")
         }
       )
-      lines <- c(lines, "", "USCR tuning history:", paste0("- ", tuning_lines))
+      lines <- c(lines, "", paste0(state$model, " tuning history:"), paste0("- ", tuning_lines))
     }
     
     if (!is.null(state$raw_error)) {
@@ -2604,22 +2902,22 @@ server <- function(input, output, session) {
   }
   
   uscr_sim_debug <- reactiveVal(
-    make_model_debug("USCR", "Simulated grid", "Simulated grid; uploaded NPS data", "Total deer events per camera, camera-days, and buffered state space.")
+    make_model_debug("USCR", "Simulated grid", "Simulated grid; uploaded NPS data", "Total animal events per camera, camera-days, and buffered state space.")
   )
   rem_sim_debug <- reactiveVal(
-    make_model_debug("REM", "Teaching simulator", "Matching REM teaching simulator only", "Counts are simulated directly from the REM observation model.")
+    make_model_debug("REM", "Shared spatial simulator", "Shared spatial simulator", "REM uses total animal events per camera and camera-days derived from the shared spatial simulator.")
   )
   tte_sim_debug <- reactiveVal(
-    make_model_debug("TTE", "Teaching simulator", "Matching TTE teaching simulator only", "Counts are simulated directly from the TTE observation model.")
+    make_model_debug("TTE", "Shared spatial simulator", "Shared spatial simulator", "TTE uses total animal events per camera and camera-days derived from the shared spatial simulator.")
   )
   uscr_nps_debug <- reactiveVal(
-    make_model_debug("USCR", "Uploaded NPS data", "Uploaded NPS data; simulated grid", "Total deer events per camera, camera-days, and buffered state space.")
+    make_model_debug("USCR", "Uploaded NPS data", "Uploaded NPS data; simulated grid", "Total animal events per camera, camera-days, and buffered state space.")
   )
   rem_nps_debug <- reactiveVal(
-    make_model_debug("REM", "Uploaded NPS data", "Uploaded NPS data only", "REM uses total deer events per camera and camera-days.")
+    make_model_debug("REM", "Uploaded NPS data", "Uploaded NPS data only", "REM uses total animal events per camera and camera-days.")
   )
   tte_nps_debug <- reactiveVal(
-    make_model_debug("TTE", "Uploaded NPS data", "Uploaded NPS data only", "Current build passes total deer events per camera and camera-days.")
+    make_model_debug("TTE", "Uploaded NPS data", "Uploaded NPS data only", "Current build passes total animal events per camera and camera-days.")
   )
   
   # Status tracking for model runs
@@ -2697,13 +2995,17 @@ server <- function(input, output, session) {
       stop("Model execution stopped by user", call. = FALSE)
     }
   }
+
+  app_n_chains <- function() {
+    max(3L, as.integer(input$n_chains))
+  }
   
   uscr_run_args <- function(waic = TRUE, status_callback = NULL) {
     args <- list(
       iter = input$iter_uscr,
       burnin = input$burnin_uscr,
       thin = input$thin_uscr,
-      n_chains = input$n_chains,
+      n_chains = app_n_chains(),
       M = input$M_uscr,
       log_sigma_mean = input$log_sigma_mean,
       log_sigma_sd = input$log_sigma_sd,
@@ -2713,8 +3015,8 @@ server <- function(input, output, session) {
       adaptive = TRUE,
       compute_WAIC = waic,
       diagnostic_mode = FALSE,
-      tuning_n_chains = if (isTRUE(input$n_chains > 1)) min(2L, as.integer(input$n_chains)) else 1L,
-      parallel_chains = isTRUE(input$n_chains > 1),
+      tuning_n_chains = min(2L, app_n_chains()),
+      parallel_chains = isTRUE(app_n_chains() > 1),
       status_callback = status_callback,
       verbose = FALSE
     )
@@ -2734,7 +3036,7 @@ server <- function(input, output, session) {
       "USCR",
       "Simulated grid",
       "Simulated grid; uploaded NPS data",
-      "Total deer events per camera, camera-days, and buffered state space."
+      "Total animal events per camera, camera-days, and buffered state space."
     ))
     update_model_debug(
       uscr_sim_debug,
@@ -2752,6 +3054,7 @@ server <- function(input, output, session) {
     stop_flags_env$stop_uscr_sim <- FALSE
     uscr_sim_running(TRUE)
     uscr_sim_fit(NULL)  # Clear previous results
+    uscr_sim_dataset_id(current_shared_sim_id())
     
     showNotification("Running USCR on simulated data.", type = "message", duration = 6)
     
@@ -2862,68 +3165,76 @@ server <- function(input, output, session) {
     }
   })
   
-  # --- REM: simulated teaching data ---
+  # --- REM: simulated ---
   
   observeEvent(input$run_rem_sim, {
-    d <- teaching_sim()
-    if (is.null(d) || !identical(d$model, "REM")) {
+    shared_truth <- sim()
+    shared_d <- if (!is.null(shared_truth)) sim_data() else NULL
+
+    if (is.null(shared_d)) {
       showNotification(
-        "Generate REM teaching simulator data in the Simulate data tab first.",
+        "Run the shared spatial simulator in the Simulate data tab first.",
         type = "error",
         duration = 6
       )
       return(NULL)
     }
     
+    rem_sim_dataset_id(current_shared_sim_id())
     rem_sim_debug(make_model_debug(
       "REM",
-      "Teaching simulator",
-      "Matching REM teaching simulator only",
-      "Counts are simulated directly from the REM observation model."
+      "Shared spatial simulator",
+      "Shared spatial simulator",
+      "REM uses total animal events per camera and camera-days derived from the shared spatial simulator."
     ))
     update_model_debug(
       rem_sim_debug,
       status = "running",
       stage = "Preflight checks",
       started_at = Sys.time(),
-      guidance = "REM is running on the model-based REM teaching simulator. Use this for teaching and debugging, not as a substitute for uploaded field data.",
+      guidance = "REM is running on the shared spatial simulator so it can be compared and combined with simulated USCR and TTE.",
       raw_error = NULL,
-      context = summarize_teaching_sim_context(d),
-      log_entry = "Simulated REM teaching run requested."
+      context = summarize_shared_sim_context(shared_d, "REM", sim_truth = shared_truth$truth),
+      log_entry = "Simulated REM shared-spatial run requested."
     )
     
     rem_sim_running(TRUE)
     rem_sim_fit(NULL)
     
-    showNotification("Running REM on simulated teaching data...", type = "message", duration = 6)
+    showNotification("Running REM on shared simulated spatial data...", type = "message", duration = 6)
     
     fit <- tryCatch(
       {
         withProgress(
           message = "Running REM model",
-          detail = "Preparing REM teaching-simulator inputs...",
+          detail = "Preparing REM inputs from the shared spatial simulator...",
           value = 0,
           {
-            setProgress(0.15, detail = "Running REM chains on simulated teaching data...")
-            update_model_debug(
+            status_callback <- make_encounter_status_callback(
               rem_sim_debug,
-              stage = "Sampling",
-              log_entry = "Running REM chains in NIMBLE on teaching-simulator data."
+              "REM",
+              set_progress = setProgress
+            )
+            status_callback(
+              stage = "setup",
+              detail = "Preparing REM inputs from the shared spatial simulator and initial model build...",
+              value = 0.1
             )
             
             fit_result <- run_REM(
-              y            = d$camera_counts,
-              r_km         = d$out$`Detection Distance` / 1000,
-              camera_days  = d$camera_days,
+              y            = shared_d$camera_counts,
+              r_km         = shared_d$out$`Detection Distance` / 1000,
+              camera_days  = shared_d$camera_days,
               theta_deg    = input$theta,
               iter         = input$iter_rem_tte,
               burnin       = input$burnin_rem_tte,
               thin         = input$thin_rem_tte,
-              n_chains     = input$n_chains,
+              n_chains     = app_n_chains(),
               D_max        = input$D_max,
               log_v_mean   = input$log_v_mean,
               log_v_sd     = input$log_v_sd,
-              sd_eps_max   = input$sd_eps_max
+              sd_eps_max   = input$sd_eps_max,
+              status_callback = status_callback
             )
             setProgress(1.0, detail = "Complete!")
             fit_result
@@ -2936,9 +3247,9 @@ server <- function(input, output, session) {
           status = "error",
           stage = "Failed",
           finished_at = Sys.time(),
-          guidance = friendly_model_error("REM", "simulated teaching data", e$message),
+          guidance = friendly_model_error("REM", "simulated shared spatial data", e$message),
           raw_error = e$message,
-          log_entry = paste("Simulated REM teaching run failed:", e$message)
+          log_entry = paste("Simulated REM run failed:", e$message)
         )
         showNotification(
           paste("REM (simulated) failed:", e$message),
@@ -2958,75 +3269,83 @@ server <- function(input, output, session) {
         status = "success",
         stage = "Complete",
         finished_at = Sys.time(),
-        guidance = "REM teaching-simulator run completed successfully. Review the summary above.",
-        log_entry = "Simulated REM teaching run completed."
+        guidance = "REM shared-simulator run completed successfully. Review the summary above and use Compare & combine after the other simulated models finish.",
+        log_entry = "Simulated REM run completed."
       )
       showNotification("REM (simulated) complete!", type = "message")
     }
   })
   
-  # --- TTE: simulated teaching data ---
+  # --- TTE: simulated ---
   
   observeEvent(input$run_tte_sim, {
-    d <- teaching_sim()
-    if (is.null(d) || !identical(d$model, "TTE")) {
+    shared_truth <- sim()
+    shared_d <- if (!is.null(shared_truth)) sim_data() else NULL
+
+    if (is.null(shared_d)) {
       showNotification(
-        "Generate TTE teaching simulator data in the Simulate data tab first.",
+        "Run the shared spatial simulator in the Simulate data tab first.",
         type = "error",
         duration = 6
       )
       return(NULL)
     }
     
+    tte_sim_dataset_id(current_shared_sim_id())
     tte_sim_debug(make_model_debug(
       "TTE",
-      "Teaching simulator",
-      "Matching TTE teaching simulator only",
-      "Counts are simulated directly from the TTE observation model."
+      "Shared spatial simulator",
+      "Shared spatial simulator",
+      "TTE uses total animal events per camera and camera-days derived from the shared spatial simulator."
     ))
     update_model_debug(
       tte_sim_debug,
       status = "running",
       stage = "Preflight checks",
       started_at = Sys.time(),
-      guidance = "TTE is running on the model-based TTE teaching simulator. Use this for teaching and debugging, not as a substitute for uploaded field data.",
+      guidance = "TTE is running on the shared spatial simulator so it can be compared and combined with simulated USCR and REM.",
       raw_error = NULL,
-      context = summarize_teaching_sim_context(d),
-      log_entry = "Simulated TTE teaching run requested."
+      context = summarize_shared_sim_context(shared_d, "TTE", sim_truth = shared_truth$truth),
+      log_entry = "Simulated TTE shared-spatial run requested."
     )
     
     tte_sim_running(TRUE)
     tte_sim_fit(NULL)
     
-    showNotification("Running TTE on simulated teaching data...", type = "message", duration = 6)
+    showNotification("Running TTE on shared simulated spatial data...", type = "message", duration = 6)
     
     fit <- tryCatch(
       {
         withProgress(
           message = "Running TTE model",
-          detail = "Preparing TTE teaching-simulator inputs...",
+          detail = "Preparing TTE inputs from the shared spatial simulator...",
           value = 0,
           {
-            setProgress(0.15, detail = "Running TTE chains on simulated teaching data...")
-            update_model_debug(
+            status_callback <- make_encounter_status_callback(
               tte_sim_debug,
-              stage = "Sampling",
-              log_entry = "Running TTE chains in NIMBLE on teaching-simulator data."
+              "TTE",
+              set_progress = setProgress
+            )
+            status_callback(
+              stage = "setup",
+              detail = "Preparing TTE inputs from the shared spatial simulator and initial model build...",
+              value = 0.1
             )
             
             fit_result <- run_TTE(
-              y            = d$camera_counts,
-              r_km         = d$out$`Detection Distance` / 1000,
-              camera_days  = d$camera_days,
+              y            = shared_d$camera_counts,
+              r_km         = shared_d$out$`Detection Distance` / 1000,
+              camera_days  = shared_d$camera_days,
               theta_deg    = input$theta,
               iter         = input$iter_rem_tte,
               burnin       = input$burnin_rem_tte,
               thin         = input$thin_rem_tte,
-              n_chains     = input$n_chains,
+              n_chains     = app_n_chains(),
               D_max        = input$D_max,
               log_v_mean   = input$log_v_mean,
               log_v_sd     = input$log_v_sd,
-              sd_eps_max   = input$sd_eps_max
+              sd_eps_max   = input$sd_eps_max,
+              status_callback = status_callback
             )
             setProgress(1.0, detail = "Complete!")
             fit_result
@@ -3039,9 +3358,9 @@ server <- function(input, output, session) {
           status = "error",
           stage = "Failed",
           finished_at = Sys.time(),
-          guidance = friendly_model_error("TTE", "simulated teaching data", e$message),
+          guidance = friendly_model_error("TTE", "simulated shared spatial data", e$message),
           raw_error = e$message,
-          log_entry = paste("Simulated TTE teaching run failed:", e$message)
+          log_entry = paste("Simulated TTE run failed:", e$message)
         )
         showNotification(
           paste("TTE (simulated) failed:", e$message),
@@ -3061,8 +3380,8 @@ server <- function(input, output, session) {
         status = "success",
         stage = "Complete",
         finished_at = Sys.time(),
-        guidance = "TTE teaching-simulator run completed successfully. Review the summary above.",
-        log_entry = "Simulated TTE teaching run completed."
+        guidance = "TTE shared-simulator run completed successfully. Review the summary above and use Compare & combine after the other simulated models finish.",
+        log_entry = "Simulated TTE run completed."
       )
       showNotification("TTE (simulated) complete!", type = "message")
     }
@@ -3077,7 +3396,7 @@ server <- function(input, output, session) {
       "USCR",
       "Uploaded NPS data",
       "Uploaded NPS data; simulated grid",
-      "Total deer events per camera, camera-days, and buffered state space."
+      "Total animal events per camera, camera-days, and buffered state space."
     ))
     update_model_debug(
       uscr_nps_debug,
@@ -3225,11 +3544,11 @@ server <- function(input, output, session) {
     }
     req(nps_model_inputs())
     d <- nps_model_inputs()
-    requested_chains <- as.integer(input$n_chains)
+    requested_chains <- app_n_chains()
     rem_context <- c(
       summarize_rem_context(d),
       paste("Chains requested in UI:", requested_chains),
-      "Background worker run: yes; server forces one chain for concurrency safety."
+      "Background worker run: yes; the app enforces a minimum of 3 chains."
     )
     rem_args <- list(
       y            = d$camera_counts,
@@ -3239,7 +3558,7 @@ server <- function(input, output, session) {
       iter         = input$iter_rem_tte,
       burnin       = input$burnin_rem_tte,
       thin         = input$thin_rem_tte,
-      n_chains     = 1L,
+      n_chains     = requested_chains,
       D_max        = input$D_max,
       log_v_mean   = input$log_v_mean,
       log_v_sd     = input$log_v_sd,
@@ -3249,14 +3568,14 @@ server <- function(input, output, session) {
       "REM",
       "Uploaded NPS data",
       "Uploaded NPS data only",
-      "REM uses total deer events per camera and camera-days."
+      "REM uses total animal events per camera and camera-days."
     ))
     update_model_debug(
       rem_nps_debug,
       status = "running",
       stage = "Queued background run",
       started_at = Sys.time(),
-      guidance = "REM on uploaded NPS data now runs in a background worker so other sessions stay responsive. For server safety this path uses one MCMC chain, even if the UI chain setting is higher.",
+      guidance = "REM on uploaded NPS data now runs in a background worker so other sessions stay responsive while still using the app minimum of 3 chains.",
       raw_error = NULL,
       context = rem_context,
       log_entry = "NPS REM run requested."
@@ -3278,8 +3597,9 @@ server <- function(input, output, session) {
       stage = "Background run in progress",
       log_entry = paste(
         "Submitted REM background job.",
-        "Requested chains =", requested_chains,
-        "but server REM jobs use 1 chain to reduce blocking across users."
+        "Chains used =", requested_chains,
+        "(minimum enforced by the app).",
+        "REM may internally increase iterations until max Rhat is acceptable."
       )
     )
     
@@ -3306,7 +3626,7 @@ server <- function(input, output, session) {
         status = "success",
         stage = "Complete",
         finished_at = Sys.time(),
-        guidance = "REM completed successfully in a background worker. Review the summary above.",
+        guidance = "REM completed successfully in a background worker. Review the summary above and the tuning history below.",
         log_entry = "NPS REM background run completed."
       )
       showNotification("REM (NPS) complete!", type = "message", duration = 5)
@@ -3345,7 +3665,7 @@ server <- function(input, output, session) {
       "TTE",
       "Uploaded NPS data",
       "Uploaded NPS data only",
-      "Current build passes total deer events per camera and camera-days."
+      "Current build passes total animal events per camera and camera-days."
     ))
     update_model_debug(
       tte_nps_debug,
@@ -3383,11 +3703,15 @@ server <- function(input, output, session) {
           detail = "Preparing TTE inputs from uploaded NPS data...",
           value = 0,
           {
-            setProgress(0.15, detail = "Preparing TTE inputs and running NIMBLE chains...")
-            update_model_debug(
+            status_callback <- make_encounter_status_callback(
               tte_nps_debug,
-              stage = "Sampling",
-              log_entry = "Running TTE chains in NIMBLE."
+              "TTE",
+              set_progress = setProgress
+            )
+            status_callback(
+              stage = "setup",
+              detail = "Preparing TTE inputs from uploaded data and initial model build...",
+              value = 0.1
             )
             
             # Check stop flag again before running
@@ -3404,11 +3728,12 @@ server <- function(input, output, session) {
               iter         = input$iter_rem_tte,
               burnin       = input$burnin_rem_tte,
               thin         = input$thin_rem_tte,
-              n_chains     = input$n_chains,
+              n_chains     = app_n_chains(),
               D_max        = input$D_max,
               log_v_mean   = input$log_v_mean,
               log_v_sd     = input$log_v_sd,
-              sd_eps_max   = input$sd_eps_max
+              sd_eps_max   = input$sd_eps_max,
+              status_callback = status_callback
             )
             setProgress(1.0, detail = "Complete!")
             fit_result
@@ -3492,14 +3817,14 @@ server <- function(input, output, session) {
     }
     s <- summarize_method(fit)
     list(
-      dataset                   = "Simulated",
-      mean_density_deer_per_km2 = round(s$mean_km2, 2),
+      dataset                   = "Shared spatial simulator",
+      mean_density_animals_per_km2 = round(s$mean_km2, 2),
       CI95_km2                  = c(round(s$q2.5_km2, 2), round(s$q97.5_km2, 2)),
-      mean_density_deer_per_mi2 = round(s$mean_mi2, 2),
+      mean_density_animals_per_mi2 = round(s$mean_mi2, 2),
       CI95_mi2                  = c(round(s$q2.5_mi2, 2), round(s$q97.5_mi2, 2)),
       WAIC                      = round(s$waic, 2),
       note                      = if (!is.null(sim()))
-        sprintf("True simulated density = %.1f deer/km²", sim()$truth$D_per_km2)
+        sprintf("True simulated density = %.1f animals/km²", sim()$truth$D_per_km2)
     )
   })
   
@@ -3528,9 +3853,9 @@ server <- function(input, output, session) {
     s <- summarize_method(fit)
     list(
       dataset                   = "NPS data",
-      mean_density_deer_per_km2 = round(s$mean_km2, 2),
+      mean_density_animals_per_km2 = round(s$mean_km2, 2),
       CI95_km2                  = c(round(s$q2.5_km2, 2), round(s$q97.5_km2, 2)),
-      mean_density_deer_per_mi2 = round(s$mean_mi2, 2),
+      mean_density_animals_per_mi2 = round(s$mean_mi2, 2),
       CI95_mi2                  = c(round(s$q2.5_mi2, 2), round(s$q97.5_mi2, 2)),
       WAIC                      = round(s$waic, 2)
     )
@@ -3540,7 +3865,7 @@ server <- function(input, output, session) {
   output$rem_sim_text <- renderPrint({
     dbg <- rem_sim_debug()
     if (rem_sim_running()) {
-      cat("⏳ REM model is running on teaching-simulator data...\n")
+      cat("⏳ REM model is running on the shared spatial simulator...\n")
       cat("Current stage:", dbg$stage, "\n")
       cat("Open 'Run status & troubleshooting' below for more detail.\n")
       return(invisible(NULL))
@@ -3552,20 +3877,24 @@ server <- function(input, output, session) {
     }
     fit <- rem_sim_fit()
     if (is.null(fit)) {
-      cat("REM (simulated): not run yet. Generate REM teaching data in the Simulate data tab, then click 'Run REM on simulated data'.")
+      cat("REM (simulated): not run yet. Generate the shared simulated dataset first, then click 'Run REM on simulated data'.")
       return(invisible(NULL))
     }
     s <- summarize_method(fit)
-    truth <- teaching_sim()
+    truth <- sim()
     list(
-      dataset                   = "REM teaching simulator",
-      mean_density_deer_per_km2 = round(s$mean_km2, 2),
+      dataset                   = "Shared spatial simulator",
+      mean_density_animals_per_km2 = round(s$mean_km2, 2),
       CI95_km2                  = c(round(s$q2.5_km2, 2), round(s$q97.5_km2, 2)),
-      mean_density_deer_per_mi2 = round(s$mean_mi2, 2),
+      mean_density_animals_per_mi2 = round(s$mean_mi2, 2),
       CI95_mi2                  = c(round(s$q2.5_mi2, 2), round(s$q97.5_mi2, 2)),
       WAIC                      = round(s$waic, 2),
-      note                      = if (!is.null(truth) && identical(truth$model, "REM"))
-        sprintf("True simulated density = %.1f deer/km²", truth$truth$D_per_km2)
+      note                      = if (!is.null(truth))
+        sprintf(
+          "%s true simulated density = %.1f animals/km²",
+          "Shared spatial simulator",
+          truth$truth$D_per_km2
+        )
     )
   })
   
@@ -3595,9 +3924,9 @@ server <- function(input, output, session) {
     s <- summarize_method(fit)
     list(
       dataset                   = "NPS data",
-      mean_density_deer_per_km2 = round(s$mean_km2, 2),
+      mean_density_animals_per_km2 = round(s$mean_km2, 2),
       CI95_km2                  = c(round(s$q2.5_km2, 2), round(s$q97.5_km2, 2)),
-      mean_density_deer_per_mi2 = round(s$mean_mi2, 2),
+      mean_density_animals_per_mi2 = round(s$mean_mi2, 2),
       CI95_mi2                  = c(round(s$q2.5_mi2, 2), round(s$q97.5_mi2, 2)),
       WAIC                      = round(s$waic, 2)
     )
@@ -3607,7 +3936,7 @@ server <- function(input, output, session) {
   output$tte_sim_text <- renderPrint({
     dbg <- tte_sim_debug()
     if (tte_sim_running()) {
-      cat("⏳ TTE model is running on teaching-simulator data...\n")
+      cat("⏳ TTE model is running on the shared spatial simulator...\n")
       cat("Current stage:", dbg$stage, "\n")
       cat("Open 'Run status & troubleshooting' below for more detail.\n")
       return(invisible(NULL))
@@ -3619,20 +3948,24 @@ server <- function(input, output, session) {
     }
     fit <- tte_sim_fit()
     if (is.null(fit)) {
-      cat("TTE (simulated): not run yet. Generate TTE teaching data in the Simulate data tab, then click 'Run TTE on simulated data'.")
+      cat("TTE (simulated): not run yet. Generate the shared simulated dataset first, then click 'Run TTE on simulated data'.")
       return(invisible(NULL))
     }
     s <- summarize_method(fit)
-    truth <- teaching_sim()
+    truth <- sim()
     list(
-      dataset                   = "TTE teaching simulator",
-      mean_density_deer_per_km2 = round(s$mean_km2, 2),
+      dataset                   = "Shared spatial simulator",
+      mean_density_animals_per_km2 = round(s$mean_km2, 2),
       CI95_km2                  = c(round(s$q2.5_km2, 2), round(s$q97.5_km2, 2)),
-      mean_density_deer_per_mi2 = round(s$mean_mi2, 2),
+      mean_density_animals_per_mi2 = round(s$mean_mi2, 2),
       CI95_mi2                  = c(round(s$q2.5_mi2, 2), round(s$q97.5_mi2, 2)),
       WAIC                      = round(s$waic, 2),
-      note                      = if (!is.null(truth) && identical(truth$model, "TTE"))
-        sprintf("True simulated density = %.1f deer/km²", truth$truth$D_per_km2)
+      note                      = if (!is.null(truth))
+        sprintf(
+          "%s true simulated density = %.1f animals/km²",
+          "Shared spatial simulator",
+          truth$truth$D_per_km2
+        )
     )
   })
   
@@ -3661,9 +3994,9 @@ server <- function(input, output, session) {
     s <- summarize_method(fit)
     list(
       dataset                   = "NPS data",
-      mean_density_deer_per_km2 = round(s$mean_km2, 2),
+      mean_density_animals_per_km2 = round(s$mean_km2, 2),
       CI95_km2                  = c(round(s$q2.5_km2, 2), round(s$q97.5_km2, 2)),
-      mean_density_deer_per_mi2 = round(s$mean_mi2, 2),
+      mean_density_animals_per_mi2 = round(s$mean_mi2, 2),
       CI95_mi2                  = c(round(s$q2.5_mi2, 2), round(s$q97.5_mi2, 2)),
       WAIC                      = round(s$waic, 2)
     )
@@ -3709,9 +4042,22 @@ server <- function(input, output, session) {
   # COMPARE & COMBINE (WAIC-based)
   # ================================================================
   
+  shared_sim_fits <- reactive({
+    current_id <- current_shared_sim_id()
+    if (is.null(current_id)) return(list())
+
+    fits <- list(
+      REM = if (identical(rem_sim_dataset_id(), current_id)) rem_sim_fit() else NULL,
+      TTE = if (identical(tte_sim_dataset_id(), current_id)) tte_sim_fit() else NULL,
+      USCR = if (identical(uscr_sim_dataset_id(), current_id)) uscr_sim_fit() else NULL
+    )
+    fits[!vapply(fits, is.null, logical(1))]
+  })
+
   sim_combo <- reactive({
-    req(uscr_sim_fit())
-    build_sim_combo_table_uscr_only(uscr_sim_fit())
+    fits <- shared_sim_fits()
+    if (!length(fits)) return(NULL)
+    build_combo_table_from_fits(fits)
   })
   
   nps_combo <- reactive({
@@ -3725,15 +4071,14 @@ server <- function(input, output, session) {
   })
   
   output$sim_combo_table <- renderDT({
-    fit <- uscr_sim_fit()
-    if (is.null(fit)) {
+    combo <- sim_combo()
+    if (is.null(combo)) {
       return(DT::datatable(
-        data.frame(Note = "Run USCR on simulated data from the USCR tab first."),
+        data.frame(Note = "Run one or more models from the shared spatial simulator first. Teaching-simulator runs are shown only in their own model tabs."),
         options = list(dom = "t", paging = FALSE),
         rownames = FALSE
       ))
     }
-    combo <- sim_combo()
     df <- combo$table %>%
       mutate(across(where(is.numeric), ~ round(.x, 3)))
     datatable(df, options = list(pageLength = 5, dom = "t"))
@@ -3741,14 +4086,18 @@ server <- function(input, output, session) {
   
   output$dl_sim_uscr_csv <- downloadHandler(
     filename = function() {
-      paste0("DEER_sim_USCR_posterior_summary_", Sys.Date(), ".csv")
+      paste0("DEER_shared_sim_posterior_summary_", Sys.Date(), ".csv")
     },
     content = function(file) {
-      fit <- uscr_sim_fit()
-      req(fit)
-      df <- posterior_summary_df(fit)
-      req(df)
-      readr::write_csv(dplyr::mutate(df, model = "USCR", .before = 1), file)
+      fits <- shared_sim_fits()
+      req(length(fits) > 0)
+      out <- purrr::imap_dfr(fits, function(fit, model_name) {
+        df <- posterior_summary_df(fit)
+        if (is.null(df)) return(NULL)
+        dplyr::mutate(df, model = model_name, .before = 1)
+      })
+      req(nrow(out) > 0)
+      readr::write_csv(out, file)
     }
   )
   

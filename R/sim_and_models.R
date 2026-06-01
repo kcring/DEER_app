@@ -15,16 +15,35 @@ quiet_require <- function(pkg) {
 # -------------------------------------------------------------------
 # 1. Simulation helpers (for teaching/sim tab)
 # -------------------------------------------------------------------
+home_range_km2_to_sigma_m <- function(home_range_km2) {
+  radius_km <- sqrt(home_range_km2 / pi)
+  sigma_km <- radius_km / 2.45
+  sigma_km * 1000
+}
+
+tte_detection_radius_multiplier <- function(theta_deg) {
+  theta_deg <- as.numeric(theta_deg)
+  3.324e-01 + 5.580e-03 * theta_deg - 1.454e-05 * theta_deg^2
+}
+
 simulate_camera_counts <- function(n_side   = 5,
                                    spacing_m = 300,
                                    days      = 21,
                                    D_per_km2 = 25,
                                    lambda0   = 0.20,
-                                   sigma_m   = 150,
+                                   home_range_km2 = 0.89,
+                                   sigma_m   = NULL,
+                                   buffer_m  = NULL,
                                    seed      = 1) {
   quiet_require("secr")
   
   set.seed(seed)
+  if (is.null(sigma_m)) {
+    sigma_m <- home_range_km2_to_sigma_m(home_range_km2)
+  }
+  if (is.null(buffer_m)) {
+    buffer_m <- 4 * sigma_m
+  }
   
   traps_obj <- secr::make.grid(
     nx       = n_side,
@@ -35,7 +54,7 @@ simulate_camera_counts <- function(n_side   = 5,
   
   mask_obj <- secr::make.mask(
     traps   = traps_obj,
-    buffer  = 4 * sigma_m,
+    buffer  = buffer_m,
     spacing = spacing_m / 3
   )
   
@@ -58,7 +77,9 @@ simulate_camera_counts <- function(n_side   = 5,
     truth = list(
       D_per_km2 = D_per_km2,
       lambda0   = lambda0,
+      home_range_km2 = home_range_km2,
       sigma_m   = sigma_m,
+      buffer_m  = buffer_m,
       days      = days,
       spacing_m = spacing_m,
       n_cams    = nrow(traps_obj)
@@ -212,7 +233,7 @@ simulate_teaching_counts <- function(model = c("REM", "TTE"),
     lambda <- ((2 + theta_rad) / pi) * v_km_day * r_km * D_per_km2 * camera_days * exp(eps)
   } else {
     area_km2 <- pi * r_km^2 * theta_deg / 360
-    time_unit <- 0.59 * r_km / v_km_day
+    time_unit <- tte_detection_radius_multiplier(theta_deg) * r_km / v_km_day
     tte_units <- camera_days / time_unit
     lambda <- D_per_km2 * tte_units * area_km2 * exp(eps)
   }
@@ -255,7 +276,7 @@ build_sim_data_for_nimble <- function(ch, detection_radius_m) {
 # -------------------------------------------------------------------
 # 2. NPS inputs: format deployments + images as in the Rmd
 # -------------------------------------------------------------------
-build_nps_model_inputs <- function(deployments, images) {
+build_nps_model_inputs <- function(deployments, images, max_days = NULL) {
   quiet_require("dplyr")
   quiet_require("tidyr")
   quiet_require("sf")
@@ -268,7 +289,7 @@ build_nps_model_inputs <- function(deployments, images) {
          call. = FALSE)
   }
   
-  deps <- format_deployments(deployments)
+  deps <- format_deployments(deployments, max_days = max_days)
   images <- standardize_deer_species(images)
   
   if (!inherits(images$Timestamp, "POSIXt")) {
@@ -303,8 +324,6 @@ build_nps_model_inputs <- function(deployments, images) {
     dplyr::group_by(`Cluster ID`) |>
     dplyr::summarise(
       Site           = dplyr::first(`Site Name`),
-      latitude       = dplyr::first(Latitude),
-      longitude      = dplyr::first(Longitude),
       detection_date = lubridate::date(min(Timestamp)),
       deer_count     = max(as.numeric(`Sighting Count`), na.rm = TRUE),
       start          = min(Timestamp),
@@ -671,6 +690,7 @@ run_encounter_rate_model <- function(method,
       detail,
       value = min(0.15 + 0.2 * round_i, 0.9)
     )
+    round_started <- Sys.time()
 
     fit <- run_basic_nimble_chains(
       code = code,
@@ -701,6 +721,21 @@ run_encounter_rate_model <- function(method,
     )
 
     last_fit <- fit
+
+    elapsed_min <- as.numeric(difftime(Sys.time(), round_started, units = "mins"))
+    report_status(
+      "tuning",
+      paste0(
+        method, " tuning round ", round_i,
+        " complete: max Rhat=",
+        if (is.finite(current_rhat)) format(round(current_rhat, 3), nsmall = 3) else "NA",
+        "; processing time=",
+        format(round(elapsed_min, 1), nsmall = 1),
+        " minutes",
+        if (!converged) "; the next round will take longer." else "."
+      ),
+      value = min(0.2 + 0.2 * round_i, 0.95)
+    )
 
     if (converged || !isTRUE(adaptive)) {
       break
@@ -739,11 +774,12 @@ run_REM <- function(y,
                     iter     = 6000,
                     burnin   = 1000,
                     thin     = 5,
-                    n_chains = 3,
+                    n_chains = 2,
                     D_max    = 200,
                     log_v_mean = 1.130,
                     log_v_sd   = 0.3372,
-                    sd_eps_max = 10,
+                    sd_eps_shape = 1,
+                    sd_eps_rate  = 1,
                     theta_deg  = 55,
                     adaptive = TRUE,
                     compute_WAIC = TRUE,
@@ -760,22 +796,26 @@ run_REM <- function(y,
   if (length(r_km) != J || length(camera_days) != J) {
     stop("run_REM: y, r_km, and camera_days must have same length.", call. = FALSE)
   }
+  if (length(theta_deg) == 1L) {
+    theta_deg <- rep(as.numeric(theta_deg), J)
+  } else if (length(theta_deg) != J) {
+    stop("run_REM: theta_deg must have length 1 or the same length as y.", call. = FALSE)
+  }
   
   code <- nimble::nimbleCode({
     
     # Priors
     D      ~ dunif(0, D_max)
     log_v  ~ dnorm(log_v_mean, sd = log_v_sd)
-    sd_eps ~ dunif(0, sd_eps_max)
+    sd_eps ~ dgamma(sd_eps_shape, sd_eps_rate)
     
     v     <- exp(log_v)
-    theta <- theta_rad   # passed as constant
     
     for (j in 1:J) {
       
       eps[j] ~ dnorm(0, sd = sd_eps)
       
-      log(lambda[j]) <- log(2 + theta) - log(pi_const) + log(v) +
+      log(lambda[j]) <- log(2 + theta[j]) - log(pi_const) + log(v) +
         log(r[j]) + log(D) + log(camera_days[j]) + eps[j]
       
       y[j]     ~ dpois(lambda[j])
@@ -797,11 +837,12 @@ run_REM <- function(y,
     r          = as.numeric(r_km),
     camera_days = as.numeric(camera_days),
     pi_const   = pi,
-    theta_rad  = theta_deg * pi / 180,
+    theta      = as.numeric(theta_deg) * pi / 180,
     D_max      = D_max,
     log_v_mean = log_v_mean,
     log_v_sd   = log_v_sd,
-    sd_eps_max = sd_eps_max
+    sd_eps_shape = sd_eps_shape,
+    sd_eps_rate  = sd_eps_rate
   )
   
   Data <- list(y = as.numeric(y))
@@ -839,11 +880,12 @@ run_TTE <- function(y,
                     iter     = 6000,
                     burnin   = 1000,
                     thin     = 5,
-                    n_chains = 3,
+                    n_chains = 2,
                     D_max    = 200,
                     log_v_mean = 1.130,
                     log_v_sd   = 0.3372,
-                    sd_eps_max = 10,
+                    sd_eps_shape = 1,
+                    sd_eps_rate  = 1,
                     theta_deg  = 55,
                     adaptive = TRUE,
                     compute_WAIC = TRUE,
@@ -860,20 +902,24 @@ run_TTE <- function(y,
   if (length(r_km) != J || length(camera_days) != J) {
     stop("run_TTE: y, r_km, and camera_days must have same length.", call. = FALSE)
   }
+  if (length(theta_deg) == 1L) {
+    theta_deg <- rep(as.numeric(theta_deg), J)
+  } else if (length(theta_deg) != J) {
+    stop("run_TTE: theta_deg must have length 1 or the same length as y.", call. = FALSE)
+  }
   
   code <- nimble::nimbleCode({
     
     D      ~ dunif(0, D_max)
     log_v  ~ dnorm(log_v_mean, sd = log_v_sd)
-    sd_eps ~ dunif(0, sd_eps_max)
+    sd_eps ~ dgamma(sd_eps_shape, sd_eps_rate)
     
     v     <- exp(log_v)
-    theta <- theta_deg  # degrees
     
     for (j in 1:J) {
       
-      a[j] <- pi_const * r[j]^2 * theta / 360
-      mvw[j] <- 0.59 * r[j]
+      a[j] <- pi_const * r[j]^2 * theta[j] / 360
+      mvw[j] <- angle_mult[j] * r[j]
       time_unit[j]  <- mvw[j] / v
       tte_units[j]  <- camera_days[j] / time_unit[j]
       
@@ -904,8 +950,10 @@ run_TTE <- function(y,
     D_max       = D_max,
     log_v_mean  = log_v_mean,
     log_v_sd    = log_v_sd,
-    sd_eps_max  = sd_eps_max,
-    theta_deg   = theta_deg
+    sd_eps_shape = sd_eps_shape,
+    sd_eps_rate  = sd_eps_rate,
+    theta       = as.numeric(theta_deg),
+    angle_mult  = tte_detection_radius_multiplier(theta_deg)
   )
   
   Data <- list(y = as.numeric(y))
@@ -940,9 +988,14 @@ run_TTE <- function(y,
 # -------------------------------------------------------------------
 
 uscr_state_space_and_area <- function(out,
+                                      buffer_m = NULL,
                                       buffer_chi_p = 0.99,
                                       buffer_scale = 0.40) {
-  buffer <- buffer_scale * sqrt(stats::qchisq(buffer_chi_p, df = 2))
+  if (!is.null(buffer_m) && is.finite(buffer_m) && buffer_m > 0) {
+    buffer <- as.numeric(buffer_m) / 1000
+  } else {
+    buffer <- buffer_scale * sqrt(stats::qchisq(buffer_chi_p, df = 2))
+  }
   buffer_sq <- buffer ^ 2
 
   xlim <- c(
@@ -992,7 +1045,7 @@ build_uscr_code <- function(J) {
   if (J == 1L) {
     nimble::nimbleCode({
       log_sigma ~ dnorm(log_sigma_mean, sd = log_sigma_sd)
-      log_lam_0 ~ dnorm(0, sd = log_lam0_sd)
+      log_lam_0 ~ dnorm(log_lam0_mean, sd = log_lam0_sd)
       psi ~ dunif(0, 1)
       sd_eps ~ dgamma(sd_eps_shape, sd_eps_rate)
 
@@ -1034,7 +1087,7 @@ build_uscr_code <- function(J) {
   } else {
     nimble::nimbleCode({
       log_sigma ~ dnorm(log_sigma_mean, sd = log_sigma_sd)
-      log_lam_0 ~ dnorm(0, sd = log_lam0_sd)
+      log_lam_0 ~ dnorm(log_lam0_mean, sd = log_lam0_sd)
       psi ~ dunif(0, 1)
       sd_eps ~ dgamma(sd_eps_shape, sd_eps_rate)
 
@@ -1090,13 +1143,16 @@ make_uscr_constants <- function(out,
                                 M,
                                 log_sigma_mean,
                                 log_sigma_sd,
+                                log_lam0_mean,
                                 log_lam0_sd,
                                 sd_eps_shape,
                                 sd_eps_rate,
+                                buffer_m,
                                 buffer_chi_p,
                                 buffer_scale) {
   ss <- uscr_state_space_and_area(
     out,
+    buffer_m = buffer_m,
     buffer_chi_p = buffer_chi_p,
     buffer_scale = buffer_scale
   )
@@ -1111,6 +1167,7 @@ make_uscr_constants <- function(out,
     cam = as.matrix(cbind(out$utm_e, out$utm_n)),
     log_sigma_mean = log_sigma_mean,
     log_sigma_sd = log_sigma_sd,
+    log_lam0_mean = log_lam0_mean,
     log_lam0_sd = log_lam0_sd,
     sd_eps_shape = sd_eps_shape,
     sd_eps_rate = sd_eps_rate
@@ -1315,13 +1372,15 @@ run_USCR <- function(out,
                      iter = 11000,
                      burnin = 1000,
                      thin = 10,
-                     n_chains = 3,
+                     n_chains = 2,
                      M = 1000,
                      log_sigma_mean = -1.5269,
                      log_sigma_sd = 0.1535,
+                     log_lam0_mean = 0,
                      log_lam0_sd = 1,
                      sd_eps_shape = 1,
                      sd_eps_rate = 1,
+                     buffer_m = NULL,
                      buffer_chi_p = 0.99,
                      buffer_scale = 0.40,
                      adaptive = TRUE,
@@ -1421,9 +1480,11 @@ run_USCR <- function(out,
         M = current_M,
         log_sigma_mean = log_sigma_mean,
         log_sigma_sd = log_sigma_sd,
+        log_lam0_mean = log_lam0_mean,
         log_lam0_sd = log_lam0_sd,
         sd_eps_shape = sd_eps_shape,
         sd_eps_rate = sd_eps_rate,
+        buffer_m = buffer_m,
         buffer_chi_p = buffer_chi_p,
         buffer_scale = buffer_scale
       )
@@ -1453,6 +1514,7 @@ run_USCR <- function(out,
         ),
         value = min(0.2 + 0.15 * round_i, 0.7)
       )
+      round_started <- Sys.time()
 
       tune_fit <- run_uscr_chains(
         code = code,
@@ -1490,6 +1552,29 @@ run_USCR <- function(out,
 
       last_tune_fit <- tune_fit
 
+      elapsed_min <- as.numeric(difftime(Sys.time(), round_started, units = "mins"))
+      report_status(
+        "tuning",
+        paste0(
+          "USCR tuning round ", round_i,
+          " complete: max Rhat=",
+          if (is.finite(current_rhat)) format(round(current_rhat, 3), nsmall = 3) else "NA",
+          "; processing time=",
+          format(round(elapsed_min, 1), nsmall = 1),
+          " minutes",
+          if (!converged && M_too_small) {
+            "; the next round will take longer, and psi suggests increasing M before the final run."
+          } else if (!converged) {
+            "; the next round will take longer."
+          } else if (M_too_small) {
+            "; psi suggests increasing M before the final run."
+          } else {
+            "."
+          }
+        ),
+        value = min(0.25 + 0.15 * round_i, 0.78)
+      )
+
       if (converged && !M_too_small) {
         break
       }
@@ -1507,62 +1592,147 @@ run_USCR <- function(out,
 
   final_iter <- max(iter, current_iter)
   final_thin <- max(thin, current_thin)
+  final_adapt_log <- list()
+  final_fit <- NULL
+  samples_list <- NULL
+  samples_all <- NULL
+  final_const <- NULL
+  final_rhat <- Inf
+  final_M_too_small <- isTRUE(adaptive)
+  final_round <- 0L
 
-  final_const <- make_uscr_constants(
-    out = out,
-    camera_days = camera_days,
-    M = current_M,
-    log_sigma_mean = log_sigma_mean,
-    log_sigma_sd = log_sigma_sd,
-    log_lam0_sd = log_lam0_sd,
-    sd_eps_shape = sd_eps_shape,
-    sd_eps_rate = sd_eps_rate,
-    buffer_chi_p = buffer_chi_p,
-    buffer_scale = buffer_scale
-  )
+  repeat {
+    final_round <- final_round + 1L
 
-  final_data <- list(
-    y = as.numeric(camera_counts),
-    in_ss = rep(1L, final_const$M)
-  )
-  report_status(
-    "final_run",
-    paste0(
-      "USCR final run: M=", final_const$M,
+    if (!isTRUE(adaptive) && final_round > 1L) {
+      break
+    }
+
+    if (!is.null(max_adapt_rounds) && final_round > as.integer(max_adapt_rounds)) {
+      warning(
+        "USCR final run reached max_adapt_rounds = ",
+        max_adapt_rounds,
+        " before the final convergence checks cleared. Proceeding with the latest fit."
+      )
+      break
+    }
+
+    final_const <- make_uscr_constants(
+      out = out,
+      camera_days = camera_days,
+      M = current_M,
+      log_sigma_mean = log_sigma_mean,
+      log_sigma_sd = log_sigma_sd,
+      log_lam0_mean = log_lam0_mean,
+      log_lam0_sd = log_lam0_sd,
+      sd_eps_shape = sd_eps_shape,
+      sd_eps_rate = sd_eps_rate,
+      buffer_m = buffer_m,
+      buffer_chi_p = buffer_chi_p,
+      buffer_scale = buffer_scale
+    )
+
+    final_data <- list(
+      y = as.numeric(camera_counts),
+      in_ss = rep(1L, final_const$M)
+    )
+
+    final_detail <- paste0(
+      "USCR final run round ", final_round,
+      ": M=", final_const$M,
       ", iter=", final_iter,
       ", thin=", final_thin,
       ", chains=", n_chains
-    ),
-    value = 0.8
-  )
-
-  if (isTRUE(verbose)) {
-    message(
-      "USCR final run: M=", final_const$M,
-      ", iter=", final_iter,
-      ", thin=", final_thin,
-      ", chains=", n_chains,
-      ", WAIC=", compute_WAIC,
-      ", diagnostic_mode=", diagnostic_mode
     )
+    report_status(
+      "final_run",
+      final_detail,
+      value = min(0.8 + 0.05 * (final_round - 1L), 0.98)
+    )
+
+    if (isTRUE(verbose)) {
+      message(
+        final_detail,
+        ", WAIC=", compute_WAIC,
+        ", diagnostic_mode=", diagnostic_mode
+      )
+    }
+    round_started <- Sys.time()
+
+    final_fit <- run_uscr_chains(
+      code = code,
+      constants = final_const,
+      data = final_data,
+      monitors = final_monitors,
+      niter = final_iter,
+      nburnin = burnin,
+      thin = final_thin,
+      n_chains = n_chains,
+      parallel_chains = parallel_chains,
+      compute_WAIC = compute_WAIC,
+      seed = if (is.null(seed)) NULL else seed + 1000L + final_round
+    )
+
+    samples_list <- lapply(final_fit, `[[`, "samples")
+    samples_all <- do.call(rbind, samples_list)
+    psi_post_final <- samples_all[, "psi"]
+
+    final_rhat <- safe_rhat_max(samples_list)
+    final_M_too_small <- mean(psi_post_final > psi_threshold, na.rm = TRUE) > psi_prob_cutoff
+    final_converged <- is.na(final_rhat) || final_rhat <= rhat_target
+
+    final_adapt_log[[final_round]] <- data.frame(
+      round = final_round,
+      M = final_const$M,
+      niter = final_iter,
+      nburnin = burnin,
+      thin = final_thin,
+      n_chains = n_chains,
+      rhat_max = final_rhat,
+      M_too_small = final_M_too_small,
+      stringsAsFactors = FALSE
+    )
+
+    elapsed_min <- as.numeric(difftime(Sys.time(), round_started, units = "mins"))
+    report_status(
+      "final_run",
+      paste0(
+        "USCR final run round ", final_round,
+        " complete: max Rhat=",
+        if (is.finite(final_rhat)) format(round(final_rhat, 3), nsmall = 3) else "NA",
+        "; processing time=",
+        format(round(elapsed_min, 1), nsmall = 1),
+        " minutes",
+        if (!final_converged && final_M_too_small) {
+          "; the next round will take longer, and psi still suggests increasing M."
+        } else if (!final_converged) {
+          "; the next round will take longer."
+        } else if (final_M_too_small) {
+          "; psi still suggests increasing M."
+        } else {
+          "."
+        }
+      ),
+      value = min(0.88 + 0.03 * final_round, 0.99)
+    )
+
+    if (final_converged && !final_M_too_small) {
+      break
+    }
+
+    if (!isTRUE(adaptive)) {
+      break
+    }
+
+    if (!final_converged) {
+      final_iter <- final_iter * 2L
+      final_thin <- max(thin, max(1L, floor((final_iter - burnin) / 1000)))
+    }
+
+    if (final_M_too_small) {
+      current_M <- current_M * 2L
+    }
   }
-
-  final_fit <- run_uscr_chains(
-    code = code,
-    constants = final_const,
-    data = final_data,
-    monitors = final_monitors,
-    niter = final_iter,
-    nburnin = burnin,
-    thin = final_thin,
-    n_chains = n_chains,
-    parallel_chains = parallel_chains,
-    compute_WAIC = compute_WAIC,
-    seed = if (is.null(seed)) NULL else seed + 1000L
-  )
-
-  samples_list <- lapply(final_fit, `[[`, "samples")
-  samples_all <- do.call(rbind, samples_list)
 
   list(
     method = "USCR",
@@ -1572,7 +1742,8 @@ run_USCR <- function(out,
     fit_objects = final_fit,
     tuning_fit_objects = last_tune_fit,
     tuning_history = if (length(adapt_log) > 0L) do.call(rbind, adapt_log) else NULL,
-    final_rhat_max = safe_rhat_max(samples_list),
+    final_run_history = if (length(final_adapt_log) > 0L) do.call(rbind, final_adapt_log) else NULL,
+    final_rhat_max = final_rhat,
     settings = list(
       M = final_const$M,
       iter = final_iter,
@@ -1589,9 +1760,14 @@ run_USCR <- function(out,
       rhat_target = rhat_target,
       psi_threshold = psi_threshold,
       psi_prob_cutoff = psi_prob_cutoff,
+      buffer_m = buffer_m,
       buffer_chi_p = buffer_chi_p,
       buffer_scale = buffer_scale,
       area_mi2 = final_const$area_mi2,
+      log_sigma_mean = log_sigma_mean,
+      log_sigma_sd = log_sigma_sd,
+      log_lam0_mean = log_lam0_mean,
+      log_lam0_sd = log_lam0_sd,
       sd_eps_shape = sd_eps_shape,
       sd_eps_rate = sd_eps_rate
     )
@@ -1673,7 +1849,7 @@ waic_model_average <- function(rem_fit,
     `Mean density`  = stats_mat["mean", ],
     `Lower 2.5%`    = stats_mat["lower", ],
     `Upper 97.5%`   = stats_mat["upper", ],
-    `Prob > 20 DPSM`= stats_mat["probgt", ],
+    `Prob > 20 APSM`= stats_mat["probgt", ],
     `WAIC weight`   = c(waic_tbl$w, NA, NA)
   )
   

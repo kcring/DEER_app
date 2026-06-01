@@ -272,7 +272,72 @@ generate_camera_candidates <- function(allowed_area, spacing_m, camera_prefix = 
   pts_sf
 }
 
-select_camera_subset <- function(candidates_sf, budget = 0, n_alternates = 2) {
+nearest_neighbor_distances_m <- function(camera_sf) {
+  if (is.null(camera_sf) || nrow(camera_sf) < 2) {
+    return(rep(NA_real_, nrow(camera_sf)))
+  }
+
+  coords <- sf::st_coordinates(camera_sf)
+  out <- rep(NA_real_, nrow(coords))
+  for (i in seq_len(nrow(coords))) {
+    deltas <- coords[-i, , drop = FALSE] - matrix(coords[i, ], nrow = nrow(coords) - 1L, ncol = 2L, byrow = TRUE)
+    out[i] <- min(sqrt(rowSums(deltas^2)))
+  }
+  out
+}
+
+camera_grid_indices <- function(camera_sf) {
+  if (is.null(camera_sf) || !nrow(camera_sf)) {
+    return(data.frame(row_idx = integer(), col_idx = integer()))
+  }
+
+  coords <- if (all(c("x_utm", "y_utm") %in% names(camera_sf))) {
+    cbind(camera_sf$x_utm, camera_sf$y_utm)
+  } else {
+    sf::st_coordinates(camera_sf)
+  }
+
+  x_vals <- sort(unique(round(coords[, 1], 6)))
+  y_vals <- sort(unique(round(coords[, 2], 6)), decreasing = TRUE)
+
+  data.frame(
+    row_idx = match(round(coords[, 2], 6), y_vals),
+    col_idx = match(round(coords[, 1], 6), x_vals)
+  )
+}
+
+camera_edge_priority <- function(camera_sf) {
+  idx <- camera_grid_indices(camera_sf)
+  if (!nrow(idx)) {
+    return(data.frame(edge_distance = numeric(), corner_distance = numeric()))
+  }
+
+  row_min <- min(idx$row_idx)
+  row_max <- max(idx$row_idx)
+  col_min <- min(idx$col_idx)
+  col_max <- max(idx$col_idx)
+
+  edge_distance <- pmin(
+    idx$row_idx - row_min,
+    row_max - idx$row_idx,
+    idx$col_idx - col_min,
+    col_max - idx$col_idx
+  )
+
+  corner_distance <- pmin(
+    abs(idx$row_idx - row_min) + abs(idx$col_idx - col_min),
+    abs(idx$row_idx - row_min) + abs(idx$col_idx - col_max),
+    abs(idx$row_idx - row_max) + abs(idx$col_idx - col_min),
+    abs(idx$row_idx - row_max) + abs(idx$col_idx - col_max)
+  )
+
+  data.frame(
+    edge_distance = edge_distance,
+    corner_distance = corner_distance
+  )
+}
+
+select_camera_subset <- function(candidates_sf, budget = 0, n_alternates = 2, spacing_m = NA_real_) {
   total_n <- nrow(candidates_sf)
   if (!total_n) {
     stop("No candidate cameras were available for selection.", call. = FALSE)
@@ -280,10 +345,23 @@ select_camera_subset <- function(candidates_sf, budget = 0, n_alternates = 2) {
 
   budget <- as.integer(budget)
   n_alternates <- as.integer(max(0, n_alternates))
+  prefix <- if ("camera_id" %in% names(candidates_sf)) {
+    sub("_[0-9]+$", "", candidates_sf$camera_id[1])
+  } else {
+    "CAM"
+  }
+  candidates_sf$candidate_camera_id <- candidates_sf$camera_id
 
   if (is.na(budget) || budget <= 0 || budget >= total_n) {
     selected <- candidates_sf
     selected$status <- "final"
+    selected$camera_id <- sprintf("%s_%03d", prefix, seq_len(nrow(selected)))
+    nn_selected <- nearest_neighbor_distances_m(selected)
+    mean_nn <- if (length(nn_selected) && any(is.finite(nn_selected))) mean(nn_selected, na.rm = TRUE) else NA_real_
+    max_nn <- if (length(nn_selected) && any(is.finite(nn_selected))) max(nn_selected, na.rm = TRUE) else NA_real_
+    attr(selected, "spacing_note") <- ""
+    attr(selected, "mean_nearest_neighbor_m") <- mean_nn
+    attr(selected, "max_nearest_neighbor_m") <- max_nn
     return(selected)
   }
 
@@ -302,7 +380,67 @@ select_camera_subset <- function(candidates_sf, budget = 0, n_alternates = 2) {
   }
 
   out <- candidates_sf[chosen, , drop = FALSE]
-  out$status <- c(rep("final", min(budget, nrow(out))), rep("alternate", max(0, nrow(out) - budget)))
+  helper_idx <- camera_grid_indices(out)
+  edge_priority <- camera_edge_priority(out)
+  out$row_idx_helper <- helper_idx$row_idx
+  out$col_idx_helper <- helper_idx$col_idx
+  out$edge_distance_helper <- edge_priority$edge_distance
+  out$corner_distance_helper <- edge_priority$corner_distance
+  out$status <- "final"
+
+  n_final <- min(budget, nrow(out))
+  n_alt <- max(0, nrow(out) - n_final)
+  if (n_alt > 0) {
+    alt_order <- order(
+      out$corner_distance_helper,
+      out$edge_distance_helper,
+      out$row_idx_helper,
+      out$col_idx_helper
+    )
+    out$status[alt_order[seq_len(n_alt)]] <- "alternate"
+  }
+
+  final_pts <- out[out$status == "final", , drop = FALSE]
+  alt_pts <- out[out$status == "alternate", , drop = FALSE]
+
+  if (nrow(final_pts)) {
+    final_pts <- final_pts[order(final_pts$row_idx_helper, final_pts$col_idx_helper), , drop = FALSE]
+  }
+  if (nrow(alt_pts)) {
+    alt_pts <- alt_pts[order(alt_pts$corner_distance_helper, alt_pts$edge_distance_helper,
+                             alt_pts$row_idx_helper, alt_pts$col_idx_helper), , drop = FALSE]
+  }
+
+  if (nrow(final_pts)) {
+    final_pts$camera_id <- sprintf("%s_%03d", prefix, seq_len(nrow(final_pts)))
+  }
+  if (nrow(alt_pts)) {
+    alt_pts$camera_id <- sprintf("%s_%03d", prefix, 100L + seq_len(nrow(alt_pts)))
+  }
+
+  out <- dplyr::bind_rows(final_pts, alt_pts)
+  out$row_idx_helper <- NULL
+  out$col_idx_helper <- NULL
+  out$edge_distance_helper <- NULL
+  out$corner_distance_helper <- NULL
+
+  nn_final <- nearest_neighbor_distances_m(final_pts)
+  mean_nn <- if (length(nn_final) && any(is.finite(nn_final))) mean(nn_final, na.rm = TRUE) else NA_real_
+  max_nn <- if (length(nn_final) && any(is.finite(nn_final))) max(nn_final, na.rm = TRUE) else NA_real_
+  spacing_note <- ""
+  if (is.finite(spacing_m) && is.finite(max_nn) && max_nn > spacing_m * 1.5) {
+    spacing_note <- paste0(
+      "The reduced camera count keeps a well-spread subset, but it does not preserve the original ",
+      round(spacing_m),
+      " m spacing target everywhere. The largest nearest-neighbor spacing among final cameras is about ",
+      round(max_nn),
+      " m."
+    )
+  }
+
+  attr(out, "spacing_note") <- spacing_note
+  attr(out, "mean_nearest_neighbor_m") <- mean_nn
+  attr(out, "max_nearest_neighbor_m") <- max_nn
   out
 }
 

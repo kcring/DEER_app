@@ -44,15 +44,6 @@ clean_deployment_import <- function(deployments) {
   nm <- trimws(nm)
   names(deployments) <- nm
 
-  # Accept either Park or Site as the broader site identifier.
-  if (!"Park" %in% names(deployments)) {
-    if ("Site" %in% names(deployments)) {
-      deployments$Park <- deployments$Site
-    } else {
-      deployments$Park <- NA_character_
-    }
-  }
-  
   # Trim leading/trailing whitespace from all character columns
   deployments[] <- lapply(deployments, function(x) {
     if (is.character(x)) {
@@ -152,19 +143,17 @@ check_deployments <- function(deployment, images = NULL) {
   }
   
   # ---- Auto-fix Site Names missing leading zero ----
-  deployment$`Site Name` <- mapply(function(sn, park) {
+  deployment$`Site Name` <- vapply(deployment$`Site Name`, function(sn) {
     if (is.na(sn) || sn == "") return(sn)
     
-    # Match pattern like HOFU_1 or MORR_9 (no leading zero)
-    if (grepl(paste0("^", park, "_[0-9]$"), sn)) {
-      num <- sub(".*_", "", sn)
-      corrected <- paste0(park, "_0", num)
+    # Match patterns like HOFU_1 or FRSP_WILD_9 and add a leading zero.
+    if (grepl("^[A-Z]{2,}(?:_[A-Z]{2,})*_[0-9]$", sn)) {
+      corrected <- sub("_(\\d)$", "_0\\1", sn)
       message("🛠 Fixed Site Name: ", sn, " → ", corrected)
       return(corrected)
-    } else {
-      return(sn)
     }
-  }, deployment$`Site Name`, deployment$Park, USE.NAMES = FALSE)
+    sn
+  }, character(1))
   
   # --- Site Name validation ---
   valid_regex <- paste0(
@@ -194,7 +183,7 @@ check_deployments <- function(deployment, images = NULL) {
   for (i in seq_len(nrow(deployment))) {
     row_values <- deployment[i, deployment_cols]
     
-    # Skip row if all deployment columns except Park, Site Name, Notes are blank
+    # Skip row if all deployment columns except Site Name and Notes are blank
     if (all(is.na(row_values) | row_values == "")) next
     
     # --- Dates ---
@@ -240,6 +229,18 @@ check_deployments <- function(deployment, images = NULL) {
     dd_val <- deployment$`Detection Distance`[i]
     if (!is.na(dd_val) && dd_val != "" && suppressWarnings(is.na(as.numeric(dd_val)))) {
       issues <- c(issues, paste("❌ Non-numeric value in Detection Distance row", i, ":", dd_val))
+    }
+    
+    if ("Camera Detection Angle" %in% names(deployment)) {
+      theta_val <- deployment$`Camera Detection Angle`[i]
+      theta_num <- suppressWarnings(as.numeric(theta_val))
+      if (!is.na(theta_val) && theta_val != "") {
+        if (is.na(theta_num)) {
+          issues <- c(issues, paste("❌ Non-numeric value in Camera Detection Angle row", i, ":", theta_val))
+        } else if (theta_num <= 0 || theta_num > 360) {
+          issues <- c(issues, paste("❌ Camera Detection Angle out of range in row", i, ":", theta_val, "— must be between 0 and 360 degrees"))
+        }
+      }
     }
 
     if ("Camera Height" %in% names(deployment)) {
@@ -311,8 +312,7 @@ check_images <- function(images, deployments, survey_year = NULL) {
   fixes  <- c()
   
   # ---- Required columns ----
-  required_cols <- c("Site Name", "Latitude", "Longitude", "Timestamp",
-                     "Species", "Sighting Count", "Cluster ID")
+  required_cols <- c("Site Name", "Timestamp", "Species", "Sighting Count", "Cluster ID")
   missing_cols <- setdiff(required_cols, names(images))
   if (length(missing_cols) > 0) {
     stop(paste0(
@@ -358,25 +358,27 @@ check_images <- function(images, deployments, survey_year = NULL) {
     }
   }
   
-  # ---- Latitude / Longitude checks ----
-  lat_num <- suppressWarnings(as.numeric(images$Latitude))
-  lon_num <- suppressWarnings(as.numeric(images$Longitude))
-  
-  bad_lat <- which(is.na(lat_num) | lat_num == 0)
-  if (length(bad_lat) > 0) {
-    issues <- c(issues, paste0("❌ ", length(bad_lat), " image(s) have missing or zero Latitude"))
-  }
-  
-  bad_lon <- which(is.na(lon_num) | lon_num == 0)
-  if (length(bad_lon) > 0) {
-    issues <- c(issues, paste0("❌ ", length(bad_lon), " image(s) have missing or zero Longitude"))
-  }
-  
-  # Auto-fix positive longitudes
-  fix_lon <- which(!is.na(lon_num) & lon_num > 0 & lon_num <= 180)
-  if (length(fix_lon) > 0) {
-    images$Longitude[fix_lon] <- -abs(lon_num[fix_lon])
-    message("🛠 Fixed Longitude for ", length(fix_lon), " image(s) ")
+  # ---- Latitude / Longitude checks (optional in image files) ----
+  if (all(c("Latitude", "Longitude") %in% names(images))) {
+    lat_num <- suppressWarnings(as.numeric(images$Latitude))
+    lon_num <- suppressWarnings(as.numeric(images$Longitude))
+    
+    bad_lat <- which(is.na(lat_num) | lat_num == 0)
+    if (length(bad_lat) > 0) {
+      issues <- c(issues, paste0("❌ ", length(bad_lat), " image(s) have missing or zero Latitude"))
+    }
+    
+    bad_lon <- which(is.na(lon_num) | lon_num == 0)
+    if (length(bad_lon) > 0) {
+      issues <- c(issues, paste0("❌ ", length(bad_lon), " image(s) have missing or zero Longitude"))
+    }
+    
+    # Auto-fix positive longitudes
+    fix_lon <- which(!is.na(lon_num) & lon_num > 0 & lon_num <= 180)
+    if (length(fix_lon) > 0) {
+      images$Longitude[fix_lon] <- -abs(lon_num[fix_lon])
+      message("🛠 Fixed Longitude for ", length(fix_lon), " image(s) ")
+    }
   }
   
   # ---- Required fields check ----
@@ -413,7 +415,7 @@ check_images <- function(images, deployments, survey_year = NULL) {
   }
   images$Timestamp <- ts_parsed
   
-  # ---- Timestamp vs deployment window check (±3 days buffer) ----
+  # ---- Timestamp vs deployment window check ----
   dt_deploy <- data.table::data.table(deployments)
   dt_deploy[, dep_start := as.Date(`Start Date`, format = "%m/%d/%Y")]
   dt_deploy[, dep_end   := as.Date(`End Date`,   format = "%m/%d/%Y")]
@@ -429,7 +431,7 @@ check_images <- function(images, deployments, survey_year = NULL) {
     all.x = TRUE
   )
   
-  buffer_days <- 3L
+  buffer_days <- 0L
   
   out_of_window <- merged_dates[
     !is.na(img_date) &
@@ -466,10 +468,10 @@ check_images <- function(images, deployments, survey_year = NULL) {
 }
 
 # -------------------------------------------------------------------
-# FORMAT DEPLOYMENTS (trim to 56 days if needed)
+# FORMAT DEPLOYMENTS (optional trimming)
 # -------------------------------------------------------------------
 
-format_deployments <- function(deployments) {
+format_deployments <- function(deployments, max_days = NULL) {
   # Ensure dplyr is available
   if (!requireNamespace("dplyr", quietly = TRUE)) {
     stop("Package 'dplyr' is required for format_deployments()", call. = FALSE)
@@ -505,25 +507,40 @@ format_deployments <- function(deployments) {
       End_Date   = parse_date_safe(`End Date`)
     )
   
-  # If deployment > 56 days, trim End Date
   deps <- deps %>%
     dplyr::mutate(
-      operational_days = as.numeric(difftime(End_Date, Start_Date, units = "days")),
-      End_Date = dplyr::if_else(operational_days > 56, 
-                                Start_Date + 56, 
-                                End_Date),
-      `End Date` = format(End_Date, "%m/%d/%Y")
-    ) %>%
+      operational_days = as.numeric(difftime(End_Date, Start_Date, units = "days"))
+    )
+  
+  if (!is.null(max_days) && is.finite(max_days) && max_days > 0) {
+    max_days <- as.integer(max_days[[1]])
+    deps <- deps %>%
+      dplyr::mutate(
+        End_Date = dplyr::if_else(
+          operational_days > max_days,
+          Start_Date + max_days,
+          End_Date
+        )
+      )
+  }
+  
+  deps <- deps %>%
+    dplyr::mutate(`End Date` = format(End_Date, "%m/%d/%Y")) %>%
     dplyr::select(-Start_Date, -End_Date, -operational_days)
   
   return(deps)
 }
 
 # -------------------------------------------------------------------
-# TRIM IMAGES TO 56 DAYS
+# TRIM IMAGES TO A USER-DEFINED NUMBER OF DAYS
 # -------------------------------------------------------------------
 
-trim_images_56days <- function(images) {
+trim_images_to_days <- function(images, max_days = 56) {
+  max_days <- as.integer(max_days[[1]])
+  if (is.na(max_days) || max_days < 1) {
+    stop("max_days must be a positive integer.", call. = FALSE)
+  }
+
   # Ensure Timestamp is POSIXct
   if (!inherits(images$Timestamp, "POSIXt")) {
     images$Timestamp <- parse_timestamp_robust(images$Timestamp)
@@ -540,11 +557,11 @@ trim_images_56days <- function(images) {
     dplyr::mutate(days_from_start = as.numeric(difftime(Timestamp, first_date,
                                                         units = "days")))
   
-  # Check if any rows exceed 56 days
-  rows_to_remove <- images_check %>% dplyr::filter(days_from_start > 56)
+  # Check if any rows exceed the requested deployment length
+  rows_to_remove <- images_check %>% dplyr::filter(days_from_start > max_days)
   
   if (nrow(rows_to_remove) == 0) {
-    message("✅ No images taken after 56 days. Dataset left unchanged.")
+    message("✅ No images taken after ", max_days, " days. Dataset left unchanged.")
     return(images)
   } else {
     # Count rows removed per site
@@ -552,19 +569,23 @@ trim_images_56days <- function(images) {
       dplyr::group_by(`Site Name`) %>%
       dplyr::summarize(removed = n(), .groups = "drop")
     
-    message("⚠️ Images beyond 56 days were removed:")
+    message("⚠️ Images beyond ", max_days, " days were removed:")
     for (i in seq_len(nrow(removal_counts))) {
       message(paste0("  Site ", removal_counts$`Site Name`[i], ": ",
                      removal_counts$removed[i], " row(s) removed"))
     }
     
-    # Keep only rows within 56 days
+    # Keep only rows within the requested deployment length
     images_trimmed <- images_check %>%
-      dplyr::filter(days_from_start <= 56) %>%
+      dplyr::filter(days_from_start <= max_days) %>%
       dplyr::select(-first_date, -days_from_start)
     
     return(images_trimmed)
   }
+}
+
+trim_images_56days <- function(images) {
+  trim_images_to_days(images, max_days = 56)
 }
 
 # -------------------------------------------------------------------
@@ -645,13 +666,30 @@ deer_counts_per_camera <- function(images) {
   species_counts_per_camera(images, "Deer")
 }
 
-species_counts_per_camera <- function(images, species_name) {
-  filter_species_rows(images, species_name) %>%
-    dplyr::group_by(`Site Name`, Latitude, Longitude) %>%
+species_counts_per_camera <- function(images, species_name, deployments = NULL) {
+  counts <- filter_species_rows(images, species_name) %>%
+    dplyr::group_by(`Site Name`) %>%
     dplyr::summarise(
       total_detections = sum(as.numeric(`Sighting Count`), na.rm = TRUE),
       .groups = "drop"
     )
+
+  if (!is.null(deployments) &&
+      all(c("Site Name", "Latitude", "Longitude") %in% names(deployments))) {
+    coords <- deployments %>%
+      dplyr::select(`Site Name`, Latitude, Longitude) %>%
+      dplyr::distinct()
+    counts <- counts %>%
+      dplyr::left_join(coords, by = "Site Name")
+  } else if (all(c("Latitude", "Longitude") %in% names(images))) {
+    coords <- images %>%
+      dplyr::select(`Site Name`, Latitude, Longitude) %>%
+      dplyr::distinct()
+    counts <- counts %>%
+      dplyr::left_join(coords, by = "Site Name")
+  }
+
+  counts
 }
 
 deer_daily_detections <- function(images) {

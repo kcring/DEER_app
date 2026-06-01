@@ -666,6 +666,12 @@ deer_counts_per_camera <- function(images) {
   species_counts_per_camera(images, "Deer")
 }
 
+first_finite_or_na <- function(x) {
+  vals <- suppressWarnings(as.numeric(x))
+  vals <- vals[is.finite(vals)]
+  if (length(vals)) vals[1] else NA_real_
+}
+
 species_counts_per_camera <- function(images, species_name, deployments = NULL) {
   counts <- filter_species_rows(images, species_name) %>%
     dplyr::group_by(`Site Name`) %>%
@@ -677,14 +683,22 @@ species_counts_per_camera <- function(images, species_name, deployments = NULL) 
   if (!is.null(deployments) &&
       all(c("Site Name", "Latitude", "Longitude") %in% names(deployments))) {
     coords <- deployments %>%
-      dplyr::select(`Site Name`, Latitude, Longitude) %>%
-      dplyr::distinct()
+      dplyr::group_by(`Site Name`) %>%
+      dplyr::summarise(
+        Latitude = first_finite_or_na(Latitude),
+        Longitude = first_finite_or_na(Longitude),
+        .groups = "drop"
+      )
     counts <- counts %>%
       dplyr::left_join(coords, by = "Site Name")
   } else if (all(c("Latitude", "Longitude") %in% names(images))) {
     coords <- images %>%
-      dplyr::select(`Site Name`, Latitude, Longitude) %>%
-      dplyr::distinct()
+      dplyr::group_by(`Site Name`) %>%
+      dplyr::summarise(
+        Latitude = first_finite_or_na(Latitude),
+        Longitude = first_finite_or_na(Longitude),
+        .groups = "drop"
+      )
     counts <- counts %>%
       dplyr::left_join(coords, by = "Site Name")
   }

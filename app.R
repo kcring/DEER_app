@@ -474,41 +474,26 @@ ui <- page_fillable(
       .nav-tabs {
         justify-content: center !important;
       }
-      .banner-logos {
+      .banner-wrap {
         text-align: center;
         padding: 10px 0 18px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: clamp(12px, 2vw, 28px);
-        flex-wrap: wrap;
       }
-      .banner-logo-side {
-        height: clamp(60px, 7vw, 90px);
-        width: auto;
-        flex: 0 0 auto;
-      }
-      .banner-logo-nps {
-        height: clamp(88px, 10vw, 132px);
-      }
-      .banner-logo-main {
-        height: clamp(320px, 34vw, 430px);
-        width: auto;
-        flex: 0 1 auto;
+      .banner-image {
+        width: min(100%, 1608px);
+        height: auto;
+        display: block;
+        margin: 0 auto;
+        border-radius: 18px;
+        box-shadow: 0 12px 28px rgba(33,48,38,.12);
       }
     "))
   ),
   tags$div(
-    class = "banner-logos",
-    tagList(
-      tags$img(src = "wvu_logo.png", alt = "WVU", class = "banner-logo-side"),
-      tags$img(src = "deer_app_logo.png", alt = "DEER App", class = "banner-logo-main"),
-      tags$img(src = "nps_logo.png", alt = "NPS", class = "banner-logo-side banner-logo-nps"),
-      if (file.exists(file.path("www", "usgs_logo.png"))) {
-        tags$img(src = "usgs_logo.png", alt = "USGS", class = "banner-logo-side")
-      } else {
-        tags$span(style = "display:none;")
-      }
+    class = "banner-wrap",
+    tags$img(
+      src = "deer_app_banner.png",
+      alt = "DEER App banner",
+      class = "banner-image"
     )
   ),
   
@@ -2662,7 +2647,24 @@ server <- function(input, output, session) {
     validate(
       need(nrow(dc) > 0, paste0("No '", species_name, "' images found in dataset."))
     )
-    
+
+    dc <- dc |>
+      dplyr::mutate(
+        Longitude = suppressWarnings(as.numeric(Longitude)),
+        Latitude = suppressWarnings(as.numeric(Latitude))
+      ) |>
+      dplyr::filter(is.finite(Longitude), is.finite(Latitude))
+
+    validate(
+      need(
+        nrow(dc) > 0,
+        paste0(
+          "No valid site coordinates are available for the selected species. ",
+          "Check the deployment file Latitude/Longitude columns."
+        )
+      )
+    )
+
     td_max <- max(dc$total_detections, na.rm = TRUE)
     ggplot(dc, aes(x = Longitude, y = Latitude)) +
       geom_point(aes(size = total_detections),

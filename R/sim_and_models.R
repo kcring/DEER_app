@@ -12,6 +12,36 @@ quiet_require <- function(pkg) {
   }
 }
 
+coerce_and_validate_coordinates <- function(df,
+                                            lon_col = "Longitude",
+                                            lat_col = "Latitude",
+                                            site_col = NULL,
+                                            context = "coordinates") {
+  lon <- suppressWarnings(as.numeric(df[[lon_col]]))
+  lat <- suppressWarnings(as.numeric(df[[lat_col]]))
+  bad <- which(!is.finite(lon) | !is.finite(lat))
+
+  if (length(bad) > 0) {
+    site_vals <- if (!is.null(site_col) && site_col %in% names(df)) {
+      as.character(df[[site_col]][bad])
+    } else {
+      as.character(bad)
+    }
+    site_vals[is.na(site_vals) | trimws(site_vals) == ""] <- paste0("row ", bad)
+    stop(
+      "Missing or invalid ",
+      context,
+      " for site(s): ",
+      paste(unique(site_vals), collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  df[[lon_col]] <- lon
+  df[[lat_col]] <- lat
+  df
+}
+
 # -------------------------------------------------------------------
 # 1. Simulation helpers (for teaching/sim tab)
 # -------------------------------------------------------------------
@@ -299,6 +329,14 @@ build_nps_model_inputs <- function(deployments, images, max_days = NULL) {
   
   deps <- deps |>
     dplyr::rename(Site = `Site Name`)
+
+  deps <- coerce_and_validate_coordinates(
+    deps,
+    lon_col = "Longitude",
+    lat_col = "Latitude",
+    site_col = "Site",
+    context = "deployment coordinates"
+  )
   
   # UTM conversion and centering (same logic as Rmd)
   mean_lon  <- mean(deps$Longitude, na.rm = TRUE)
@@ -1010,7 +1048,15 @@ uscr_state_space_and_area <- function(out,
   if (all(c("Longitude", "Latitude") %in% names(out))) {
     quiet_require("sf")
 
-    coords_df <- unique(out[, c("Longitude", "Latitude"), drop = FALSE])
+    site_col <- if ("Site" %in% names(out)) "Site" else NULL
+    coords_df <- unique(out[, c(site_col, "Longitude", "Latitude"), drop = FALSE])
+    coords_df <- coerce_and_validate_coordinates(
+      coords_df,
+      lon_col = "Longitude",
+      lat_col = "Latitude",
+      site_col = site_col,
+      context = "USCR state-space coordinates"
+    )
     mean_lon <- mean(coords_df$Longitude, na.rm = TRUE)
     utm_zone <- floor((mean_lon + 180) / 6) + 1
     epsg_code <- 26900 + utm_zone
@@ -1022,6 +1068,15 @@ uscr_state_space_and_area <- function(out,
 
     area_mi2 <- as.numeric(sf::st_area(cam_buff)) / (2.59 * 1e6)
   } else {
+    if (any(!is.finite(out$utm_e) | !is.finite(out$utm_n))) {
+      bad <- which(!is.finite(out$utm_e) | !is.finite(out$utm_n))
+      bad_sites <- if ("Site" %in% names(out)) as.character(out$Site[bad]) else as.character(bad)
+      stop(
+        "Missing or invalid projected coordinates for site(s): ",
+        paste(unique(bad_sites), collapse = ", "),
+        call. = FALSE
+      )
+    }
     # Simulated UTM-only grids: preserve current script behavior
     area_mi2 <- (xlim[2] - xlim[1]) * (ylim[2] - ylim[1]) / 2.59
   }

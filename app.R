@@ -323,6 +323,7 @@ ui <- page_fillable(
       }
       .nav-link {
         color: var(--rw2) !important;
+        font-size: 1.08rem;
       }
       .nav-link.active {
         color: var(--rw1) !important;
@@ -476,15 +477,13 @@ ui <- page_fillable(
       }
       .banner-wrap {
         text-align: center;
-        padding: 10px 0 18px;
+        padding: 6px 0 12px;
       }
       .banner-image {
-        width: min(100%, 1608px);
+        width: min(100%, 1480px);
         height: auto;
         display: block;
         margin: 0 auto;
-        border-radius: 18px;
-        box-shadow: 0 12px 28px rgba(33,48,38,.12);
       }
     "))
   ),

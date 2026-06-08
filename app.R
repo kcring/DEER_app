@@ -1407,6 +1407,16 @@ ui <- page_fillable(
             actionButton("stop_uscr_nps", "Stop", class = "btn-danger", style = "margin-left: 10px;"),
             style = "margin-bottom: 10px;"
           ),
+          checkboxInput(
+            "uscr_fast_mode_nps",
+            "Fast test mode for uploaded USCR",
+            value = FALSE
+          ),
+          p(
+            class = "small",
+            style = "max-width: 52rem; color: var(--muted); margin-top: -0.2rem;",
+            "Fast test mode is for quick checks only. It uses lighter settings and caps adaptive reruns so you can test whether the uploaded-data pipeline works without waiting for a full production run."
+          ),
           br(),
           verbatimTextOutput("uscr_nps_text"),
           h5("Run status & troubleshooting"),
@@ -2829,7 +2839,12 @@ server <- function(input, output, session) {
     paste("Camera detection angle:", range_text, "(from uploaded deployment data)")
   }
   
-  summarize_uscr_context <- function(d, source_label = "Uploaded", sim_truth = NULL) {
+  summarize_uscr_context <- function(d, source_label = "Uploaded", sim_truth = NULL, fast_mode = FALSE) {
+    effective_iter <- if (isTRUE(fast_mode)) min(as.integer(input$iter_uscr), 4000L) else as.integer(input$iter_uscr)
+    effective_burnin <- if (isTRUE(fast_mode)) min(as.integer(input$burnin_uscr), 500L) else as.integer(input$burnin_uscr)
+    effective_thin <- if (isTRUE(fast_mode)) max(1L, min(as.integer(input$thin_uscr), 4L)) else as.integer(input$thin_uscr)
+    effective_M <- if (isTRUE(fast_mode)) min(as.integer(input$M_uscr), 200L) else as.integer(input$M_uscr)
+
     det_dist <- if ("Detection Distance" %in% names(d$out)) {
       paste0(
         format_num(min(d$out$`Detection Distance`, na.rm = TRUE), 1),
@@ -2849,15 +2864,19 @@ server <- function(input, output, session) {
       paste(
         "Requested USCR full run:",
         paste0(
-          "iter=", input$iter_uscr,
-          ", burn-in=", input$burnin_uscr,
-          ", thin=", input$thin_uscr,
+          "iter=", effective_iter,
+          ", burn-in=", effective_burnin,
+          ", thin=", effective_thin,
           ", chains=", app_n_chains(),
-          ", M=", input$M_uscr
+          ", M=", effective_M
         )
       ),
       paste("USCR state-space buffer:", format_num(input$uscr_buffer_m, 0), "m"),
-      "Adaptive tuning may start with shorter runs but now uses the same chain count shown above.",
+      if (isTRUE(fast_mode)) {
+        "USCR fast test mode is ON: adaptive reruns are capped and lighter run settings are used for faster exploratory runs."
+      } else {
+        "Adaptive tuning may start with shorter runs but now uses the same chain count shown above."
+      },
       if (source_label == "Uploaded") {
         "Supported sources here: uploaded field data and the shared spatial simulator."
       } else {
@@ -3270,7 +3289,7 @@ server <- function(input, output, session) {
     max(2L, as.integer(input$n_chains))
   }
   
-  uscr_run_args <- function(waic = TRUE, status_callback = NULL) {
+  uscr_run_args <- function(waic = TRUE, status_callback = NULL, fast_mode = FALSE) {
     args <- list(
       iter = input$iter_uscr,
       burnin = input$burnin_uscr,
@@ -3292,6 +3311,18 @@ server <- function(input, output, session) {
       status_callback = status_callback,
       verbose = FALSE
     )
+
+    if (isTRUE(fast_mode)) {
+      args$iter <- min(as.integer(input$iter_uscr), 4000L)
+      args$burnin <- min(as.integer(input$burnin_uscr), 500L)
+      args$thin <- max(1L, min(as.integer(input$thin_uscr), 4L))
+      args$M <- min(as.integer(input$M_uscr), 200L)
+      args$iter_tune <- max(args$burnin + 500L, 1500L)
+      args$thin_tune <- 1L
+      args$max_adapt_rounds <- 3L
+      args$iter_cap <- 4000L
+      args$M_cap <- 200L
+    }
     
     # Keep the app compatible with whichever run_USCR() definition is
     # currently loaded, including older variants without these extras.
@@ -3350,6 +3381,7 @@ server <- function(input, output, session) {
         check_stop_flag("stop_uscr_sim")
         
         status_callback <- function(stage, detail = NULL, value = NULL) {
+          check_stop_flag("stop_uscr_sim")
           stage_label <- switch(
             stage,
             setup = "Preparing state space and model code",
@@ -3664,6 +3696,7 @@ server <- function(input, output, session) {
   observeEvent(input$run_uscr_nps, {
     req(nps_model_inputs())
     d <- nps_model_inputs()
+    uscr_fast_mode <- isTRUE(input$uscr_fast_mode_nps)
     uscr_nps_debug(make_model_debug(
       "USCR",
       "Uploaded field data",
@@ -3677,8 +3710,12 @@ server <- function(input, output, session) {
       started_at = Sys.time(),
       guidance = "USCR supports uploaded field data. This panel will show whether the run is still in setup, adaptive tuning, or the final run.",
       raw_error = NULL,
-      context = summarize_uscr_context(d, source_label = "Uploaded"),
-      log_entry = "Uploaded-data USCR run requested."
+      context = summarize_uscr_context(d, source_label = "Uploaded", fast_mode = uscr_fast_mode),
+      log_entry = if (uscr_fast_mode) {
+        "Uploaded-data USCR run requested with fast test mode enabled."
+      } else {
+        "Uploaded-data USCR run requested."
+      }
     )
     validate(
       need(all(d$camera_days > 0),
@@ -3691,7 +3728,7 @@ server <- function(input, output, session) {
     uscr_nps_fit(NULL)  # Clear previous results
     
     showNotification(
-      "Running USCR on uploaded data.",
+      if (uscr_fast_mode) "Running USCR on uploaded data (fast test mode)." else "Running USCR on uploaded data.",
       type = "message",
       duration = NULL,
       id = "uscr_nps_status"
@@ -3718,6 +3755,7 @@ server <- function(input, output, session) {
         }
         
         status_callback <- function(stage, detail = NULL, value = NULL) {
+          check_stop_flag("stop_uscr_nps")
           stage_label <- switch(
             stage,
             setup = "Preparing state space and model code",
@@ -3748,7 +3786,7 @@ server <- function(input, output, session) {
               camera_counts = d$camera_counts,
               camera_days = d$camera_days
             ),
-            uscr_run_args(waic = TRUE, status_callback = status_callback)
+            uscr_run_args(waic = TRUE, status_callback = status_callback, fast_mode = uscr_fast_mode)
           )
         )
       },

@@ -1448,6 +1448,8 @@ run_USCR <- function(out,
                      tuning_n_chains = NULL,
                      iter_tune = NULL,
                      thin_tune = 1,
+                     iter_cap = NULL,
+                     M_cap = NULL,
                      parallel_chains = TRUE,
                      status_callback = NULL,
                      seed = NULL,
@@ -1478,6 +1480,14 @@ run_USCR <- function(out,
   n_chains <- as.integer(max(1, n_chains))
   M <- as.integer(max(1, M))
   thin_tune <- as.integer(max(1, thin_tune))
+  if (!is.null(iter_cap)) {
+    iter_cap <- as.integer(max(1, iter_cap))
+    iter <- min(iter, iter_cap)
+  }
+  if (!is.null(M_cap)) {
+    M_cap <- as.integer(max(1, M_cap))
+    M <- min(M, M_cap)
+  }
 
   if (is.null(tuning_n_chains)) {
     tuning_n_chains <- if (n_chains > 1L) min(2L, n_chains) else 1L
@@ -1490,6 +1500,9 @@ run_USCR <- function(out,
     iter_tune <- min(iter, iter_tune)
   } else {
     iter_tune <- as.integer(iter_tune)
+  }
+  if (!is.null(iter_cap)) {
+    iter_tune <- min(iter_tune, iter_cap)
   }
 
   base_monitors <- c(
@@ -1636,16 +1649,25 @@ run_USCR <- function(out,
 
       if (!converged) {
         current_iter <- current_iter * 2L
+        if (!is.null(iter_cap)) {
+          current_iter <- min(current_iter, iter_cap)
+        }
         current_thin <- max(1L, floor((current_iter - burnin) / 1000))
       }
 
       if (converged && M_too_small) {
         current_M <- current_M * 2L
+        if (!is.null(M_cap)) {
+          current_M <- min(current_M, M_cap)
+        }
       }
     }
   }
 
   final_iter <- max(iter, current_iter)
+  if (!is.null(iter_cap)) {
+    final_iter <- min(final_iter, iter_cap)
+  }
   final_thin <- max(thin, current_thin)
   final_adapt_log <- list()
   final_fit <- NULL
@@ -1781,11 +1803,17 @@ run_USCR <- function(out,
 
     if (!final_converged) {
       final_iter <- final_iter * 2L
+      if (!is.null(iter_cap)) {
+        final_iter <- min(final_iter, iter_cap)
+      }
       final_thin <- max(thin, max(1L, floor((final_iter - burnin) / 1000)))
     }
 
     if (final_M_too_small) {
       current_M <- current_M * 2L
+      if (!is.null(M_cap)) {
+        current_M <- min(current_M, M_cap)
+      }
     }
   }
 
@@ -1806,6 +1834,8 @@ run_USCR <- function(out,
       thin = final_thin,
       iter_tune = iter_tune,
       thin_tune = thin_tune,
+      iter_cap = iter_cap,
+      M_cap = M_cap,
       n_chains = n_chains,
       tuning_n_chains = tuning_n_chains,
       compute_WAIC = compute_WAIC,

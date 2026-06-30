@@ -671,10 +671,18 @@ run_encounter_rate_model <- function(method,
                                      verbose = FALSE) {
   report_status <- function(stage, detail = NULL, value = NULL) {
     if (is.function(status_callback)) {
-      try(
-        status_callback(stage = stage, detail = detail, value = value),
-        silent = TRUE
+      cb_err <- tryCatch(
+        {
+          status_callback(stage = stage, detail = detail, value = value)
+          NULL
+        },
+        error = function(e) e
       )
+      if (inherits(cb_err, "model_stop_requested") ||
+          (inherits(cb_err, "error") &&
+             grepl("stopped by user", conditionMessage(cb_err), ignore.case = TRUE))) {
+        stop(cb_err)
+      }
     }
   }
 
@@ -1450,6 +1458,7 @@ run_USCR <- function(out,
                      thin_tune = 1,
                      iter_cap = NULL,
                      M_cap = NULL,
+                     interrupt_callback = NULL,
                      parallel_chains = TRUE,
                      status_callback = NULL,
                      seed = NULL,
@@ -1459,11 +1468,91 @@ run_USCR <- function(out,
   
   report_status <- function(stage, detail = NULL, value = NULL) {
     if (is.function(status_callback)) {
-      try(
-        status_callback(stage = stage, detail = detail, value = value),
-        silent = TRUE
+      cb_err <- tryCatch(
+        {
+          status_callback(stage = stage, detail = detail, value = value)
+          NULL
+        },
+        error = function(e) e
       )
+      if (inherits(cb_err, "model_stop_requested") ||
+          (inherits(cb_err, "error") &&
+             grepl("stopped by user", conditionMessage(cb_err), ignore.case = TRUE))) {
+        stop(cb_err)
+      }
     }
+  }
+
+  get_interrupt_action <- function() {
+    if (!is.function(interrupt_callback)) return(NULL)
+    action <- tryCatch(interrupt_callback(), error = function(e) NULL)
+    if (is.null(action) || !nzchar(action)) return(NULL)
+    as.character(action)[1]
+  }
+
+  build_uscr_result <- function(fit_objects,
+                                samples_list,
+                                samples_all,
+                                tuning_fit_objects,
+                                tuning_history,
+                                final_run_history,
+                                final_rhat_max,
+                                settings_M,
+                                settings_iter,
+                                settings_thin,
+                                area_mi2 = NA_real_,
+                                provisional = FALSE,
+                                provisional_stage = NULL,
+                                provisional_reason = NULL) {
+    list(
+      method = "USCR",
+      samples_list = samples_list,
+      samples_all = samples_all,
+      waic = extract_waic_mean(fit_objects),
+      fit_objects = fit_objects,
+      tuning_fit_objects = tuning_fit_objects,
+      tuning_history = tuning_history,
+      final_run_history = final_run_history,
+      final_rhat_max = final_rhat_max,
+      provisional = provisional,
+      provisional_stage = provisional_stage,
+      provisional_reason = provisional_reason,
+      resumable_settings = list(
+        M = settings_M,
+        iter = settings_iter,
+        burnin = burnin,
+        thin = settings_thin
+      ),
+      settings = list(
+        M = settings_M,
+        iter = settings_iter,
+        burnin = burnin,
+        thin = settings_thin,
+        iter_tune = iter_tune,
+        thin_tune = thin_tune,
+        iter_cap = iter_cap,
+        M_cap = M_cap,
+        n_chains = n_chains,
+        tuning_n_chains = tuning_n_chains,
+        compute_WAIC = compute_WAIC,
+        diagnostic_mode = diagnostic_mode,
+        adaptive = adaptive,
+        max_adapt_rounds = max_adapt_rounds,
+        rhat_target = rhat_target,
+        psi_threshold = psi_threshold,
+        psi_prob_cutoff = psi_prob_cutoff,
+        buffer_m = buffer_m,
+        buffer_chi_p = buffer_chi_p,
+        buffer_scale = buffer_scale,
+        area_mi2 = area_mi2,
+        log_sigma_mean = log_sigma_mean,
+        log_sigma_sd = log_sigma_sd,
+        log_lam0_mean = log_lam0_mean,
+        log_lam0_sd = log_lam0_sd,
+        sd_eps_shape = sd_eps_shape,
+        sd_eps_rate = sd_eps_rate
+      )
+    )
   }
 
   J <- nrow(out)
@@ -1525,12 +1614,38 @@ run_USCR <- function(out,
   current_thin <- thin_tune
   adapt_log <- list()
   last_tune_fit <- NULL
+  latest_completed <- NULL
   current_rhat <- Inf
   M_too_small <- isTRUE(adaptive)
   round_i <- 0L
 
   if (isTRUE(adaptive)) {
     repeat {
+      action <- get_interrupt_action()
+      if (identical(action, "stop")) {
+        err <- simpleError("Model execution stopped by user")
+        class(err) <- c("model_stop_requested", class(err))
+        stop(err)
+      }
+      if (identical(action, "pause") && !is.null(latest_completed)) {
+        return(build_uscr_result(
+          fit_objects = latest_completed$fit_objects,
+          samples_list = latest_completed$samples_list,
+          samples_all = latest_completed$samples_all,
+          tuning_fit_objects = last_tune_fit,
+          tuning_history = if (length(adapt_log) > 0L) do.call(rbind, adapt_log) else NULL,
+          final_run_history = NULL,
+          final_rhat_max = latest_completed$rhat_max,
+          settings_M = latest_completed$M,
+          settings_iter = latest_completed$iter,
+          settings_thin = latest_completed$thin,
+          area_mi2 = if (!is.null(latest_completed$area_mi2)) latest_completed$area_mi2 else NA_real_,
+          provisional = TRUE,
+          provisional_stage = latest_completed$stage,
+          provisional_reason = "Paused after the latest completed USCR tuning round before convergence criteria were fully satisfied."
+        ))
+      }
+
       round_i <- round_i + 1L
 
       if (!is.null(max_adapt_rounds) && round_i > as.integer(max_adapt_rounds)) {
@@ -1619,6 +1734,17 @@ run_USCR <- function(out,
       )
 
       last_tune_fit <- tune_fit
+      latest_completed <- list(
+        fit_objects = tune_fit,
+        samples_list = samples_list,
+        samples_all = samples_all,
+        rhat_max = current_rhat,
+        M = const$M,
+        iter = current_iter,
+        thin = current_thin,
+        area_mi2 = const$area_mi2,
+        stage = "tuning"
+      )
 
       elapsed_min <- as.numeric(difftime(Sys.time(), round_started, units = "mins"))
       report_status(
@@ -1642,6 +1768,31 @@ run_USCR <- function(out,
         ),
         value = min(0.25 + 0.15 * round_i, 0.78)
       )
+
+      action <- get_interrupt_action()
+      if (identical(action, "stop")) {
+        err <- simpleError("Model execution stopped by user")
+        class(err) <- c("model_stop_requested", class(err))
+        stop(err)
+      }
+      if (identical(action, "pause")) {
+        return(build_uscr_result(
+          fit_objects = tune_fit,
+          samples_list = samples_list,
+          samples_all = samples_all,
+          tuning_fit_objects = last_tune_fit,
+          tuning_history = if (length(adapt_log) > 0L) do.call(rbind, adapt_log) else NULL,
+          final_run_history = NULL,
+          final_rhat_max = current_rhat,
+          settings_M = const$M,
+          settings_iter = current_iter,
+          settings_thin = current_thin,
+          area_mi2 = const$area_mi2,
+          provisional = TRUE,
+          provisional_stage = "tuning",
+          provisional_reason = "Paused after the latest completed USCR tuning round before convergence criteria were fully satisfied."
+        ))
+      }
 
       if (converged && !M_too_small) {
         break
@@ -1679,6 +1830,31 @@ run_USCR <- function(out,
   final_round <- 0L
 
   repeat {
+    action <- get_interrupt_action()
+    if (identical(action, "stop")) {
+      err <- simpleError("Model execution stopped by user")
+      class(err) <- c("model_stop_requested", class(err))
+      stop(err)
+    }
+    if (identical(action, "pause") && !is.null(latest_completed)) {
+      return(build_uscr_result(
+        fit_objects = latest_completed$fit_objects,
+        samples_list = latest_completed$samples_list,
+        samples_all = latest_completed$samples_all,
+        tuning_fit_objects = last_tune_fit,
+        tuning_history = if (length(adapt_log) > 0L) do.call(rbind, adapt_log) else NULL,
+        final_run_history = if (length(final_adapt_log) > 0L) do.call(rbind, final_adapt_log) else NULL,
+        final_rhat_max = latest_completed$rhat_max,
+        settings_M = latest_completed$M,
+        settings_iter = latest_completed$iter,
+        settings_thin = latest_completed$thin,
+        area_mi2 = if (!is.null(latest_completed$area_mi2)) latest_completed$area_mi2 else NA_real_,
+        provisional = TRUE,
+        provisional_stage = latest_completed$stage,
+        provisional_reason = "Paused after the latest completed USCR round before the next round began."
+      ))
+    }
+
     final_round <- final_round + 1L
 
     if (!isTRUE(adaptive) && final_round > 1L) {
@@ -1769,6 +1945,17 @@ run_USCR <- function(out,
       M_too_small = final_M_too_small,
       stringsAsFactors = FALSE
     )
+    latest_completed <- list(
+      fit_objects = final_fit,
+      samples_list = samples_list,
+      samples_all = samples_all,
+      rhat_max = final_rhat,
+      M = final_const$M,
+      iter = final_iter,
+      thin = final_thin,
+      area_mi2 = final_const$area_mi2,
+      stage = "final_run"
+    )
 
     elapsed_min <- as.numeric(difftime(Sys.time(), round_started, units = "mins"))
     report_status(
@@ -1792,6 +1979,31 @@ run_USCR <- function(out,
       ),
       value = min(0.88 + 0.03 * final_round, 0.99)
     )
+
+    action <- get_interrupt_action()
+    if (identical(action, "stop")) {
+      err <- simpleError("Model execution stopped by user")
+      class(err) <- c("model_stop_requested", class(err))
+      stop(err)
+    }
+    if (identical(action, "pause")) {
+      return(build_uscr_result(
+        fit_objects = final_fit,
+        samples_list = samples_list,
+        samples_all = samples_all,
+        tuning_fit_objects = last_tune_fit,
+        tuning_history = if (length(adapt_log) > 0L) do.call(rbind, adapt_log) else NULL,
+        final_run_history = if (length(final_adapt_log) > 0L) do.call(rbind, final_adapt_log) else NULL,
+        final_rhat_max = final_rhat,
+        settings_M = final_const$M,
+        settings_iter = final_iter,
+        settings_thin = final_thin,
+        area_mi2 = final_const$area_mi2,
+        provisional = TRUE,
+        provisional_stage = "final_run",
+        provisional_reason = "Paused after the latest completed USCR final round before convergence criteria were fully satisfied."
+      ))
+    }
 
     if (final_converged && !final_M_too_small) {
       break
@@ -1817,45 +2029,18 @@ run_USCR <- function(out,
     }
   }
 
-  list(
-    method = "USCR",
+  build_uscr_result(
+    fit_objects = final_fit,
     samples_list = samples_list,
     samples_all = samples_all,
-    waic = extract_waic_mean(final_fit),
-    fit_objects = final_fit,
     tuning_fit_objects = last_tune_fit,
     tuning_history = if (length(adapt_log) > 0L) do.call(rbind, adapt_log) else NULL,
     final_run_history = if (length(final_adapt_log) > 0L) do.call(rbind, final_adapt_log) else NULL,
     final_rhat_max = final_rhat,
-    settings = list(
-      M = final_const$M,
-      iter = final_iter,
-      burnin = burnin,
-      thin = final_thin,
-      iter_tune = iter_tune,
-      thin_tune = thin_tune,
-      iter_cap = iter_cap,
-      M_cap = M_cap,
-      n_chains = n_chains,
-      tuning_n_chains = tuning_n_chains,
-      compute_WAIC = compute_WAIC,
-      diagnostic_mode = diagnostic_mode,
-      adaptive = adaptive,
-      max_adapt_rounds = max_adapt_rounds,
-      rhat_target = rhat_target,
-      psi_threshold = psi_threshold,
-      psi_prob_cutoff = psi_prob_cutoff,
-      buffer_m = buffer_m,
-      buffer_chi_p = buffer_chi_p,
-      buffer_scale = buffer_scale,
-      area_mi2 = final_const$area_mi2,
-      log_sigma_mean = log_sigma_mean,
-      log_sigma_sd = log_sigma_sd,
-      log_lam0_mean = log_lam0_mean,
-      log_lam0_sd = log_lam0_sd,
-      sd_eps_shape = sd_eps_shape,
-      sd_eps_rate = sd_eps_rate
-    )
+    settings_M = final_const$M,
+    settings_iter = final_iter,
+    settings_thin = final_thin,
+    area_mi2 = final_const$area_mi2
   )
 }
 

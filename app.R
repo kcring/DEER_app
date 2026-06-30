@@ -115,7 +115,15 @@ summarize_method <- function(fit) {
   )
 }
 
-build_combo_table_from_fits <- function(fits, density_threshold = 20) {
+extract_density_draws_km2 <- function(fit) {
+  if (is.null(fit) || is.null(fit$samples_all) || !"D_mi2" %in% colnames(fit$samples_all)) {
+    return(numeric(0))
+  }
+  x <- as.numeric(fit$samples_all[, "D_mi2"]) / 2.59
+  x[is.finite(x)]
+}
+
+prepare_combo_density_data <- function(fits) {
   model_order <- c("REM", "TTE", "USCR")
   fits <- fits[model_order[model_order %in% names(fits)]]
   fits <- fits[!vapply(fits, is.null, logical(1))]
@@ -149,10 +157,7 @@ build_combo_table_from_fits <- function(fits, density_threshold = 20) {
     waic_weights_available <- TRUE
   }
 
-  density_draws <- lapply(fits, function(fit) {
-    x <- as.numeric(fit$samples_all[, "D_mi2"]) / 2.59
-    sort(x[is.finite(x)])
-  })
+  density_draws <- lapply(fits, function(fit) sort(extract_density_draws_km2(fit)))
   n_draws <- min(lengths(density_draws))
   if (!is.finite(n_draws) || n_draws < 1L) return(NULL)
 
@@ -175,6 +180,27 @@ build_combo_table_from_fits <- function(fits, density_threshold = 20) {
       summary_rows <- c(summary_rows, "weighted mean")
     }
   }
+
+  list(
+    fits = fits,
+    model_names = model_names,
+    waic = waic_tbl,
+    waic_weights_available = waic_weights_available,
+    model_draws = density_draws,
+    density_est = density_est,
+    summary_rows = summary_rows
+  )
+}
+
+build_combo_table_from_fits <- function(fits, density_threshold = 20) {
+  combo_data <- prepare_combo_density_data(fits)
+  if (is.null(combo_data)) return(NULL)
+
+  waic_tbl <- combo_data$waic
+  model_names <- combo_data$model_names
+  density_est <- combo_data$density_est
+  summary_rows <- combo_data$summary_rows
+  waic_weights_available <- combo_data$waic_weights_available
 
   means <- apply(density_est, 2, mean)
   lower <- apply(density_est, 2, stats::quantile, probs = 0.025)
@@ -209,6 +235,104 @@ build_combo_table_from_fits <- function(fits, density_threshold = 20) {
     models_available = model_names,
     waic_weights_available = waic_weights_available
   )
+}
+
+combo_plot_colors <- c(
+  "REM" = "#8C4F2D",
+  "TTE" = "#3F7F5F",
+  "USCR" = "#4F6FA3",
+  "unweighted mean" = "#8A8677",
+  "weighted mean" = "#2F3E46"
+)
+
+build_combo_interval_plot <- function(fits, title_text) {
+  combo_data <- prepare_combo_density_data(fits)
+  if (is.null(combo_data)) return(NULL)
+
+  interval_df <- tibble::tibble(
+    Method = colnames(combo_data$density_est),
+    mean = as.numeric(apply(combo_data$density_est, 2, mean)),
+    lower = as.numeric(apply(combo_data$density_est, 2, stats::quantile, probs = 0.025)),
+    upper = as.numeric(apply(combo_data$density_est, 2, stats::quantile, probs = 0.975))
+  ) %>%
+    dplyr::mutate(
+      Summary = dplyr::case_when(
+        Method %in% combo_data$model_names ~ "Model",
+        Method == "weighted mean" ~ "Weighted mean",
+        TRUE ~ "Unweighted mean"
+      ),
+      Method = factor(Method, levels = rev(Method)),
+      point_shape = dplyr::case_when(
+        Summary == "Model" ~ 16,
+        Summary == "Weighted mean" ~ 15,
+        TRUE ~ 17
+      )
+    )
+
+  interval_levels <- rev(colnames(combo_data$density_est))
+  interval_colors <- combo_plot_colors[interval_levels]
+  interval_colors <- interval_colors[!is.na(interval_colors)]
+
+  ggplot(interval_df, aes(x = mean, y = Method, color = Method)) +
+    geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.18, linewidth = 1, alpha = 0.95) +
+    geom_point(aes(shape = point_shape), size = 3.2, show.legend = FALSE) +
+    scale_color_manual(
+      values = interval_colors,
+      drop = FALSE
+    ) +
+    scale_shape_identity() +
+    labs(
+      title = title_text,
+      x = "Density (animals/km²)",
+      y = NULL,
+      color = NULL
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      legend.position = "top",
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(face = "bold")
+    )
+}
+
+build_combo_density_overlay_plot <- function(fits, title_text) {
+  combo_data <- prepare_combo_density_data(fits)
+  if (is.null(combo_data)) return(NULL)
+
+  density_df <- purrr::imap_dfr(
+    combo_data$model_draws,
+    ~ tibble::tibble(
+      Method = .y,
+      density_km2 = .x
+    )
+  )
+  if (!nrow(density_df)) return(NULL)
+
+  density_colors <- combo_plot_colors[c("REM", "TTE", "USCR")]
+
+  ggplot(density_df, aes(x = density_km2, color = Method, fill = Method)) +
+    geom_density(alpha = 0.16, linewidth = 1) +
+    scale_color_manual(
+      values = density_colors,
+      drop = FALSE
+    ) +
+    scale_fill_manual(
+      values = density_colors,
+      drop = FALSE
+    ) +
+    labs(
+      title = title_text,
+      x = "Density (animals/km²)",
+      y = "Posterior density",
+      color = NULL,
+      fill = NULL
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      legend.position = "top",
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(face = "bold")
+    )
 }
 
 #' Simulated data: only USCR is fit — single-model summary table (no WAIC averaging)
@@ -1404,6 +1528,7 @@ ui <- page_fillable(
           h4("Uploaded field data"),
           div(
             actionButton("run_uscr_nps", "Run USCR on uploaded data", class = "btn-primary"),
+            actionButton("pause_resume_uscr_nps", "Pause/Resume", class = "btn-warning", style = "margin-left: 10px;"),
             actionButton("stop_uscr_nps", "Stop", class = "btn-danger", style = "margin-left: 10px;"),
             style = "margin-bottom: 10px;"
           ),
@@ -1416,6 +1541,11 @@ ui <- page_fillable(
             class = "small",
             style = "max-width: 52rem; color: var(--muted); margin-top: -0.2rem;",
             "Fast test mode is for quick checks only. It uses lighter settings and caps adaptive reruns so you can test whether the uploaded-data pipeline works without waiting for a full production run."
+          ),
+          p(
+            class = "small",
+            style = "max-width: 52rem; color: var(--muted); margin-top: -0.2rem;",
+            "Pause waits for the current USCR round to finish, then saves a provisional estimate from the most recent completed round. The same button switches to Resume when a paused USCR fit is available. Provisional paused fits are useful for troubleshooting, but are excluded from Compare & combine by default."
           ),
           br(),
           verbatimTextOutput("uscr_nps_text"),
@@ -1675,12 +1805,34 @@ ui <- page_fillable(
           
           h4("Uploaded field data – model comparison and combined results (animals/km²)"),
           DTOutput("nps_combo_table"),
+          h5("Visual summaries"),
+          plotOutput("nps_combo_interval_plot", height = "320px"),
+          div(
+            downloadButton("dl_nps_combo_interval_png", "Download uploaded-data interval plot (PNG)"),
+            style = "margin-bottom: 12px;"
+          ),
+          plotOutput("nps_combo_density_plot", height = "320px"),
+          div(
+            downloadButton("dl_nps_combo_density_png", "Download uploaded-data posterior overlay (PNG)"),
+            style = "margin-bottom: 12px;"
+          ),
           p("Posterior summaries (all monitored parameters, mean, 95% CI) for each completed model:"),
           downloadButton("dl_nps_all_csv", "Download available uploaded-data posterior summaries (CSV)"),
 
           hr(),
           h4("Simulated data – shared spatial simulator comparison (animals/km²)"),
           DTOutput("sim_combo_table"),
+          h5("Visual summaries"),
+          plotOutput("sim_combo_interval_plot", height = "320px"),
+          div(
+            downloadButton("dl_sim_combo_interval_png", "Download simulated interval plot (PNG)"),
+            style = "margin-bottom: 12px;"
+          ),
+          plotOutput("sim_combo_density_plot", height = "320px"),
+          div(
+            downloadButton("dl_sim_combo_density_png", "Download simulated posterior overlay (PNG)"),
+            style = "margin-bottom: 12px;"
+          ),
           p(class = "small", style = "color: var(--muted);",
             "Only fits from the current shared spatial simulator are combined here."),
           downloadButton("dl_sim_uscr_csv", "Download available shared-simulation posterior summaries (CSV)")
@@ -2753,6 +2905,8 @@ server <- function(input, output, session) {
       guidance = "No run has been started yet.",
       raw_error = NULL,
       context = character(),
+      pause_queued = FALSE,
+      stop_queued = FALSE,
       history = character()
     )
   }
@@ -2764,6 +2918,8 @@ server <- function(input, output, session) {
                                  finished_at = NULL,
                                  guidance = NULL,
                                  raw_error = NULL,
+                                 pause_queued = NULL,
+                                 stop_queued = NULL,
                                  context = NULL,
                                  log_entry = NULL) {
     state <- rv()
@@ -2775,6 +2931,8 @@ server <- function(input, output, session) {
     if (!is.null(finished_at)) state$finished_at <- finished_at
     if (!is.null(guidance)) state$guidance <- guidance
     if (!is.null(raw_error)) state$raw_error <- raw_error
+    if (!is.null(pause_queued)) state$pause_queued <- pause_queued
+    if (!is.null(stop_queued)) state$stop_queued <- stop_queued
     if (!is.null(context)) state$context <- context
     if (!is.null(log_entry)) {
       state$history <- c(
@@ -3092,6 +3250,21 @@ server <- function(input, output, session) {
       elapsed_min <- as.numeric(difftime(end_time, state$started_at, units = "mins"))
       lines <- c(lines, paste("Elapsed:", format_num(elapsed_min, 1), "minutes"))
     }
+
+    if (isTRUE(state$pause_queued) && identical(state$status, "running")) {
+      lines <- c(
+        lines,
+        "Pause request: queued",
+        "The app will save a provisional USCR estimate after the current round finishes."
+      )
+    }
+    if (isTRUE(state$stop_queued) && identical(state$status, "running")) {
+      lines <- c(
+        lines,
+        "Stop request: queued",
+        "The app will stop the USCR run after the current round finishes."
+      )
+    }
     
     lines <- c(lines, "", "Guidance:", state$guidance)
     
@@ -3113,6 +3286,17 @@ server <- function(input, output, session) {
       if (!is.null(fit$final_rhat_max) && is.finite(fit$final_rhat_max)) {
         lines <- c(lines, paste0("- Final max Rhat: ", format_num(fit$final_rhat_max, 3)))
       }
+    }
+
+    if (!is.null(fit) && isTRUE(fit$provisional)) {
+      lines <- c(
+        lines,
+        "",
+        "Provisional result:",
+        paste0("- Stage saved: ", fit$provisional_stage %||% "latest completed round"),
+        paste0("- Reason: ", fit$provisional_reason %||% "Paused before a final converged fit was produced."),
+        "- This paused fit is excluded from Compare & combine until you resume or rerun USCR."
+      )
     }
     
     if (!is.null(fit) && !is.null(fit$tuning_history) && nrow(fit$tuning_history) > 0) {
@@ -3211,8 +3395,10 @@ server <- function(input, output, session) {
   # Stop flags for interrupting model runs
   stop_uscr_sim <- reactiveVal(FALSE)
   stop_uscr_nps <- reactiveVal(FALSE)
+  pause_uscr_nps <- reactiveVal(FALSE)
   stop_rem_nps <- reactiveVal(FALSE)
   stop_tte_nps <- reactiveVal(FALSE)
+  uscr_nps_resume_settings <- reactiveVal(NULL)
   
   nps_model_inputs <- reactive({
     req(deployment_checked(), images_checked())
@@ -3244,8 +3430,79 @@ server <- function(input, output, session) {
   observeEvent(input$stop_uscr_nps, {
     stop_uscr_nps(TRUE)
     stop_flags_env$stop_uscr_nps <- TRUE
+    update_model_debug(
+      uscr_nps_debug,
+      stop_queued = TRUE,
+      guidance = paste(
+        "Stop has been queued for uploaded-data USCR.",
+        "The current USCR round still has to finish before the run can terminate cleanly."
+      ),
+      log_entry = "USCR stop requested; waiting for the current round to finish."
+    )
     showNotification("Stopping USCR (uploaded data) run...", 
                      type = "warning", duration = 3)
+  })
+
+  refresh_uscr_pause_resume_button <- function() {
+    if (isTRUE(uscr_nps_running())) {
+      updateActionButton(session, "pause_resume_uscr_nps", label = "Pause after current round")
+      shinyjs::enable("pause_resume_uscr_nps")
+    } else if (!is.null(uscr_nps_resume_settings())) {
+      updateActionButton(session, "pause_resume_uscr_nps", label = "Resume from paused settings")
+      shinyjs::enable("pause_resume_uscr_nps")
+    } else {
+      updateActionButton(session, "pause_resume_uscr_nps", label = "Pause/Resume")
+      shinyjs::disable("pause_resume_uscr_nps")
+    }
+  }
+
+  observe({
+    uscr_nps_running()
+    uscr_nps_resume_settings()
+    refresh_uscr_pause_resume_button()
+  })
+
+  observeEvent(input$pause_resume_uscr_nps, {
+    if (isTRUE(uscr_nps_running())) {
+      if (isTRUE(pause_uscr_nps())) {
+        showNotification(
+          "USCR pause is already queued for the end of the current round.",
+          type = "warning",
+          duration = 4
+        )
+        return(NULL)
+      }
+      pause_uscr_nps(TRUE)
+      stop_flags_env$pause_uscr_nps <- TRUE
+      update_model_debug(
+        uscr_nps_debug,
+        pause_queued = TRUE,
+        guidance = paste(
+          "Pause has been queued for uploaded-data USCR.",
+          "The current USCR round still has to finish before a provisional estimate can be saved."
+        ),
+        stop_queued = FALSE,
+        log_entry = "USCR pause requested; waiting for the current round to finish."
+      )
+      showNotification(
+        "Pausing USCR (uploaded data) after the current round finishes...",
+        type = "warning",
+        duration = 5
+      )
+      return(NULL)
+    }
+
+    resume_override <- uscr_nps_resume_settings()
+    if (is.null(resume_override)) {
+      showNotification(
+        "No paused USCR round is available to resume from yet.",
+        type = "warning",
+        duration = 5
+      )
+      return(NULL)
+    }
+
+    start_uscr_nps_run(resume_override = resume_override, resumed_from_pause = TRUE)
   })
   
   observeEvent(input$stop_rem_nps, {
@@ -3281,15 +3538,32 @@ server <- function(input, output, session) {
   check_stop_flag <- function(flag_name) {
     if (exists(flag_name, envir = stop_flags_env) && 
         isTRUE(get(flag_name, envir = stop_flags_env))) {
-      stop("Model execution stopped by user", call. = FALSE)
+      err <- simpleError("Model execution stopped by user")
+      class(err) <- c("model_stop_requested", class(err))
+      stop(err)
     }
+  }
+
+  check_interrupt_action <- function(stop_flag_name = NULL, pause_flag_name = NULL) {
+    if (!is.null(stop_flag_name) &&
+        exists(stop_flag_name, envir = stop_flags_env) &&
+        isTRUE(get(stop_flag_name, envir = stop_flags_env))) {
+      return("stop")
+    }
+    if (!is.null(pause_flag_name) &&
+        exists(pause_flag_name, envir = stop_flags_env) &&
+        isTRUE(get(pause_flag_name, envir = stop_flags_env))) {
+      return("pause")
+    }
+    NULL
   }
 
   app_n_chains <- function() {
     max(2L, as.integer(input$n_chains))
   }
   
-  uscr_run_args <- function(waic = TRUE, status_callback = NULL, fast_mode = FALSE) {
+  uscr_run_args <- function(waic = TRUE, status_callback = NULL, fast_mode = FALSE,
+                            override = NULL, interrupt_callback = NULL) {
     args <- list(
       iter = input$iter_uscr,
       burnin = input$burnin_uscr,
@@ -3308,6 +3582,7 @@ server <- function(input, output, session) {
       diagnostic_mode = FALSE,
       tuning_n_chains = app_n_chains(),
       parallel_chains = isTRUE(app_n_chains() > 1),
+      interrupt_callback = interrupt_callback,
       status_callback = status_callback,
       verbose = FALSE
     )
@@ -3322,6 +3597,13 @@ server <- function(input, output, session) {
       args$max_adapt_rounds <- 3L
       args$iter_cap <- 4000L
       args$M_cap <- 200L
+    }
+
+    if (!is.null(override)) {
+      if (!is.null(override$iter)) args$iter <- max(as.integer(args$iter), as.integer(override$iter))
+      if (!is.null(override$thin)) args$thin <- max(as.integer(args$thin), as.integer(override$thin))
+      if (!is.null(override$M)) args$M <- max(as.integer(args$M), as.integer(override$M))
+      if (!is.null(override$burnin)) args$burnin <- max(as.integer(args$burnin), as.integer(override$burnin))
     }
     
     # Keep the app compatible with whichever run_USCR() definition is
@@ -3693,7 +3975,7 @@ server <- function(input, output, session) {
   
   # --- USCR: NPS ---
   
-  observeEvent(input$run_uscr_nps, {
+  start_uscr_nps_run <- function(resume_override = NULL, resumed_from_pause = FALSE) {
     req(nps_model_inputs())
     d <- nps_model_inputs()
     uscr_fast_mode <- isTRUE(input$uscr_fast_mode_nps)
@@ -3708,10 +3990,18 @@ server <- function(input, output, session) {
       status = "running",
       stage = "Preflight checks",
       started_at = Sys.time(),
-      guidance = "USCR supports uploaded field data. This panel will show whether the run is still in setup, adaptive tuning, or the final run.",
+      guidance = if (resumed_from_pause) {
+        "USCR resumed from the latest paused round settings. This panel will show whether the run is still in setup, adaptive tuning, or the final run."
+      } else {
+        "USCR supports uploaded field data. This panel will show whether the run is still in setup, adaptive tuning, or the final run."
+      },
       raw_error = NULL,
+      pause_queued = FALSE,
+      stop_queued = FALSE,
       context = summarize_uscr_context(d, source_label = "Uploaded", fast_mode = uscr_fast_mode),
-      log_entry = if (uscr_fast_mode) {
+      log_entry = if (resumed_from_pause) {
+        "Uploaded-data USCR resume requested from paused settings."
+      } else if (uscr_fast_mode) {
         "Uploaded-data USCR run requested with fast test mode enabled."
       } else {
         "Uploaded-data USCR run requested."
@@ -3724,11 +4014,20 @@ server <- function(input, output, session) {
     
     # Reset stop flag
     stop_uscr_nps(FALSE)
+    pause_uscr_nps(FALSE)
+    stop_flags_env$stop_uscr_nps <- FALSE
+    stop_flags_env$pause_uscr_nps <- FALSE
     uscr_nps_running(TRUE)
     uscr_nps_fit(NULL)  # Clear previous results
     
     showNotification(
-      if (uscr_fast_mode) "Running USCR on uploaded data (fast test mode)." else "Running USCR on uploaded data.",
+      if (resumed_from_pause) {
+        "Resuming USCR on uploaded data from paused settings."
+      } else if (uscr_fast_mode) {
+        "Running USCR on uploaded data (fast test mode)."
+      } else {
+        "Running USCR on uploaded data."
+      },
       type = "message",
       duration = NULL,
       id = "uscr_nps_status"
@@ -3752,6 +4051,13 @@ server <- function(input, output, session) {
         if (stop_uscr_nps()) {
           showNotification("USCR (uploaded data) run cancelled.", type = "warning")
           return(NULL)
+        }
+
+        interrupt_callback <- function() {
+          check_interrupt_action(
+            stop_flag_name = "stop_uscr_nps",
+            pause_flag_name = "pause_uscr_nps"
+          )
         }
         
         status_callback <- function(stage, detail = NULL, value = NULL) {
@@ -3786,7 +4092,13 @@ server <- function(input, output, session) {
               camera_counts = d$camera_counts,
               camera_days = d$camera_days
             ),
-            uscr_run_args(waic = TRUE, status_callback = status_callback, fast_mode = uscr_fast_mode)
+            uscr_run_args(
+              waic = TRUE,
+              status_callback = status_callback,
+              fast_mode = uscr_fast_mode,
+              override = resume_override,
+              interrupt_callback = interrupt_callback
+            )
           )
         )
       },
@@ -3795,12 +4107,14 @@ server <- function(input, output, session) {
         if (stop_uscr_nps()) {
           update_model_debug(
             uscr_nps_debug,
-            status = "stopped",
-            stage = "Stopped by user",
-            finished_at = Sys.time(),
-              guidance = "The uploaded-data USCR run was stopped manually before completion.",
-              raw_error = e$message,
-              log_entry = "Uploaded-data USCR run stopped by user."
+        status = "stopped",
+        stage = "Stopped by user",
+        finished_at = Sys.time(),
+            guidance = "The uploaded-data USCR run was stopped manually before completion.",
+            raw_error = e$message,
+            pause_queued = FALSE,
+            stop_queued = FALSE,
+            log_entry = "Uploaded-data USCR run stopped by user."
           )
           showNotification("USCR (uploaded data) run stopped by user.", type = "warning")
         } else {
@@ -3811,6 +4125,8 @@ server <- function(input, output, session) {
             finished_at = Sys.time(),
             guidance = friendly_model_error("USCR", "uploaded field data", e$message),
             raw_error = e$message,
+            pause_queued = FALSE,
+            stop_queued = FALSE,
             log_entry = paste("Uploaded-data USCR failed:", e$message)
           )
           showNotification(
@@ -3824,10 +4140,35 @@ server <- function(input, output, session) {
         removeNotification("uscr_nps_status")
         uscr_nps_running(FALSE)
         stop_uscr_nps(FALSE)  # Reset stop flag
+        pause_uscr_nps(FALSE)
+        stop_flags_env$stop_uscr_nps <- FALSE
+        stop_flags_env$pause_uscr_nps <- FALSE
       }
     )
     uscr_nps_fit(fit)
-    if (!is.null(fit) && !stop_uscr_nps()) {
+    if (!is.null(fit) && isTRUE(fit$provisional)) {
+      uscr_nps_resume_settings(fit$resumable_settings)
+      removeNotification("uscr_nps_status")
+      update_model_debug(
+        uscr_nps_debug,
+        status = "paused",
+        stage = "Paused after completed round",
+        finished_at = Sys.time(),
+        guidance = paste(
+          "A provisional USCR estimate was saved from the most recent completed round.",
+          "Use it for troubleshooting only, then click 'Pause/Resume' to continue from these settings."
+        ),
+        pause_queued = FALSE,
+        stop_queued = FALSE,
+        log_entry = "Uploaded-data USCR paused and provisional fit saved."
+      )
+      showNotification(
+        "USCR paused after the latest completed round. A provisional estimate was saved.",
+        type = "warning",
+        duration = 8
+      )
+    } else if (!is.null(fit) && !stop_uscr_nps()) {
+      uscr_nps_resume_settings(NULL)
       removeNotification("uscr_nps_status")
       update_model_debug(
         uscr_nps_debug,
@@ -3835,10 +4176,20 @@ server <- function(input, output, session) {
         stage = "Complete",
         finished_at = Sys.time(),
         guidance = "Uploaded-data USCR completed successfully. Review the summary above and the tuning history below.",
+        pause_queued = FALSE,
+        stop_queued = FALSE,
         log_entry = "Uploaded-data USCR run completed."
       )
       showNotification("USCR (uploaded data) complete!", type = "message")
     }
+  }
+
+  observeEvent(input$run_uscr_nps, {
+    if (isTRUE(uscr_nps_running())) {
+      showNotification("USCR (uploaded data) is already running.", type = "warning", duration = 4)
+      return(NULL)
+    }
+    start_uscr_nps_run()
   })
   
   # --- REM: NPS ---
@@ -3886,10 +4237,23 @@ server <- function(input, output, session) {
       status = "running",
       stage = "Queued background run",
       started_at = Sys.time(),
-      guidance = "REM on uploaded field data now runs in an experimental background worker intended to help other sessions stay responsive while still using the app minimum of 2 chains.",
+      guidance = paste(
+        "REM on uploaded field data is running in a background worker so this session should stay responsive.",
+        "This path does not provide live round-by-round tuning updates while the worker is running,",
+        "but the requested run settings are shown below and the full tuning history will appear after completion."
+      ),
       raw_error = NULL,
       context = rem_context,
-      log_entry = "Uploaded-data REM run requested."
+      log_entry = paste(
+        "Uploaded-data REM run requested.",
+        paste0(
+          "Requested settings: iter=", input$iter_rem_tte,
+          ", burn-in=", input$burnin_rem_tte,
+          ", thin=", input$thin_rem_tte,
+          ", chains=", requested_chains,
+          "."
+        )
+      )
     )
     validate(
       need(all(d$camera_days > 0),
@@ -3910,12 +4274,23 @@ server <- function(input, output, session) {
         "Submitted REM background job.",
         "Chains used =", requested_chains,
         "(minimum enforced by the app).",
+        "Live tuning updates are not available for this background path.",
         "REM may internally increase iterations until max Rhat is acceptable."
       )
     )
     
     showNotification(
-      "REM on uploaded data is running in the background. This session should stay responsive while it runs.",
+      paste(
+        "REM background run started.",
+        paste0(
+          "Requested settings: iter=", input$iter_rem_tte,
+          ", burn-in=", input$burnin_rem_tte,
+          ", thin=", input$thin_rem_tte,
+          ", chains=", requested_chains,
+          "."
+        ),
+        "This session should stay responsive, but live tuning updates are not available for this path."
+      ),
       type = "message",
       duration = NULL,
       id = "rem_nps_progress"
@@ -4166,6 +4541,10 @@ server <- function(input, output, session) {
       CI95_km2                  = c(round(s$q2.5_km2, 2), round(s$q97.5_km2, 2))
     )
     if (is.finite(s$waic)) out$WAIC <- round(s$waic, 2)
+    if (isTRUE(fit$provisional)) {
+      out$Status <- "Provisional paused estimate"
+      out$Warning <- fit$provisional_reason %||% "This estimate comes from the most recent completed USCR round and should not be interpreted as a final converged result."
+    }
     out
   })
   
@@ -4364,6 +4743,24 @@ server <- function(input, output, session) {
       density_threshold = input$combo_density_threshold
     )
   })
+
+  sim_combo_interval_plot_obj <- reactive({
+    fits <- shared_sim_fits()
+    if (!length(fits)) return(NULL)
+    build_combo_interval_plot(
+      fits,
+      title_text = "Shared spatial simulator: density estimates by model"
+    )
+  })
+
+  sim_combo_density_plot_obj <- reactive({
+    fits <- shared_sim_fits()
+    if (!length(fits)) return(NULL)
+    build_combo_density_overlay_plot(
+      fits,
+      title_text = "Shared spatial simulator: posterior density overlap"
+    )
+  })
   
   nps_combo <- reactive({
     build_combo_table_from_fits(
@@ -4373,6 +4770,35 @@ server <- function(input, output, session) {
         USCR = uscr_nps_fit()
       ),
       density_threshold = input$combo_density_threshold
+    )
+  })
+
+  nps_combo_fits <- reactive({
+    fits <- list(
+      REM = rem_nps_fit(),
+      TTE = tte_nps_fit(),
+      USCR = uscr_nps_fit()
+    )
+    fits[!vapply(fits, is.null, logical(1))]
+    fits <- fits[!vapply(fits, function(x) isTRUE(x$provisional), logical(1))]
+    fits
+  })
+
+  nps_combo_interval_plot_obj <- reactive({
+    fits <- nps_combo_fits()
+    if (!length(fits)) return(NULL)
+    build_combo_interval_plot(
+      fits,
+      title_text = "Uploaded field data: density estimates by model"
+    )
+  })
+
+  nps_combo_density_plot_obj <- reactive({
+    fits <- nps_combo_fits()
+    if (!length(fits)) return(NULL)
+    build_combo_density_overlay_plot(
+      fits,
+      title_text = "Uploaded field data: posterior density overlap"
     )
   })
   
@@ -4389,6 +4815,18 @@ server <- function(input, output, session) {
       mutate(across(where(is.numeric), ~ round(.x, 3)))
     datatable(df, options = list(pageLength = 5, dom = "t", autoWidth = TRUE), rownames = FALSE)
   })
+
+  output$sim_combo_interval_plot <- renderPlot({
+    p <- sim_combo_interval_plot_obj()
+    validate(need(!is.null(p), "Run one or more shared-simulation models first."))
+    p
+  }, res = 120)
+
+  output$sim_combo_density_plot <- renderPlot({
+    p <- sim_combo_density_plot_obj()
+    validate(need(!is.null(p), "Run one or more shared-simulation models first."))
+    p
+  }, res = 120)
   
   output$dl_sim_uscr_csv <- downloadHandler(
     filename = function() {
@@ -4406,18 +4844,35 @@ server <- function(input, output, session) {
       readr::write_csv(out, file)
     }
   )
+
+  output$dl_sim_combo_interval_png <- downloadHandler(
+    filename = function() {
+      paste0("DEER_shared_sim_interval_plot_", Sys.Date(), ".png")
+    },
+    content = function(file) {
+      p <- sim_combo_interval_plot_obj()
+      req(!is.null(p))
+      ggplot2::ggsave(file, plot = p, width = 8.5, height = 4.5, dpi = 300, bg = "white")
+    }
+  )
+
+  output$dl_sim_combo_density_png <- downloadHandler(
+    filename = function() {
+      paste0("DEER_shared_sim_density_overlay_", Sys.Date(), ".png")
+    },
+    content = function(file) {
+      p <- sim_combo_density_plot_obj()
+      req(!is.null(p))
+      ggplot2::ggsave(file, plot = p, width = 8.5, height = 4.5, dpi = 300, bg = "white")
+    }
+  )
   
   output$dl_nps_all_csv <- downloadHandler(
     filename = function() {
       paste0("DEER_uploaded_data_posterior_summary_", Sys.Date(), ".csv")
     },
     content = function(file) {
-      fits <- list(
-        REM = rem_nps_fit(),
-        TTE = tte_nps_fit(),
-        USCR = uscr_nps_fit()
-      )
-      fits <- fits[!vapply(fits, is.null, logical(1))]
+      fits <- nps_combo_fits()
       req(length(fits) > 0)
       df <- dplyr::bind_rows(
         lapply(names(fits), function(model_name) {
@@ -4435,9 +4890,14 @@ server <- function(input, output, session) {
   output$nps_combo_table <- renderDT({
     combo <- nps_combo()
     if (is.null(combo)) {
+      note_text <- if (isTRUE(uscr_nps_fit()$provisional)) {
+        "A paused provisional USCR fit is currently saved, but provisional USCR fits are excluded from Compare & combine until you resume or rerun that model."
+      } else {
+        "Run at least one uploaded-data model from its tab first. The table will update as REM, TTE, and USCR finish."
+      }
       return(DT::datatable(
         data.frame(
-          Note = "Run at least one uploaded-data model from its tab first. The table will update as REM, TTE, and USCR finish."
+          Note = note_text
         ),
         options = list(dom = "t", paging = FALSE),
         rownames = FALSE
@@ -4447,6 +4907,40 @@ server <- function(input, output, session) {
       mutate(across(where(is.numeric), ~ round(.x, 3)))
     datatable(df, options = list(pageLength = 5, dom = "t", autoWidth = TRUE), rownames = FALSE)
   })
+
+  output$nps_combo_interval_plot <- renderPlot({
+    p <- nps_combo_interval_plot_obj()
+    validate(need(!is.null(p), "Run at least one uploaded-data model first."))
+    p
+  }, res = 120)
+
+  output$nps_combo_density_plot <- renderPlot({
+    p <- nps_combo_density_plot_obj()
+    validate(need(!is.null(p), "Run at least one uploaded-data model first."))
+    p
+  }, res = 120)
+
+  output$dl_nps_combo_interval_png <- downloadHandler(
+    filename = function() {
+      paste0("DEER_uploaded_data_interval_plot_", Sys.Date(), ".png")
+    },
+    content = function(file) {
+      p <- nps_combo_interval_plot_obj()
+      req(!is.null(p))
+      ggplot2::ggsave(file, plot = p, width = 8.5, height = 4.5, dpi = 300, bg = "white")
+    }
+  )
+
+  output$dl_nps_combo_density_png <- downloadHandler(
+    filename = function() {
+      paste0("DEER_uploaded_data_density_overlay_", Sys.Date(), ".png")
+    },
+    content = function(file) {
+      p <- nps_combo_density_plot_obj()
+      req(!is.null(p))
+      ggplot2::ggsave(file, plot = p, width = 8.5, height = 4.5, dpi = 300, bg = "white")
+    }
+  )
 }
 
 # -------------------------------------------------------------------
